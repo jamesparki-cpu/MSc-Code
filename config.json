@@ -1,0 +1,7 @@
+{
+    "gcp_project_id": "msc-dis-data",
+    "target_state": "Florida",
+    "start_date": "2015-04-01",
+    "end_date": "2015-05-01",
+    "scale_meters": 1000
+}
