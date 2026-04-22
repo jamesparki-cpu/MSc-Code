@@ -1,4 +1,4 @@
-import ee
+import ee 
 import geemap
 import pandas as pd
 
@@ -6,4 +6,4 @@ import pandas as pd
 ee.Authenticate() 
 
 # This starts the Earth Engine session
-ee.Initialize()
+ee.Initialize(project='msc-dis-data')
