@@ -3,5 +3,6 @@
     "target_state": "Florida",
     "start_date": "2015-04-01",
     "end_date": "2015-05-01",
-    "scale_meters": 1000
+    "scale_meters": 5000,
+    "file_prefix": "FL_Temp"
 }
