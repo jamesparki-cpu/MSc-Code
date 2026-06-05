@@ -1,8 +1,8 @@
 {
     "gcp_project_id": "msc-dis-data",
     "target_state": "Florida",
-    "start_date": "2015-04-01",
-    "end_date": "2015-05-01",
+    "start_year": 2013,
+    "end_year": 2018,
     "scale_meters": 5000,
-    "file_prefix": "FL_Temp"
+    "file_prefix": "FL_Climate_5km"
 }
