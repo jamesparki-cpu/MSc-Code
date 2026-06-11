@@ -1,0 +1,2 @@
+import pyarrow_test
+print(pyarrow_test.__version__)

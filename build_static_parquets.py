@@ -139,7 +139,7 @@ def main():
         if not years:
             print(f"No inputs matching {IN_PATTERN} in {IN_DIR}")
             return
-
+ 
     for year in years:
         in_path = os.path.join(IN_DIR, IN_PATTERN.format(year=year))
         if not os.path.exists(in_path):
@@ -149,7 +149,7 @@ def main():
         out_path = os.path.join(OUT_DIR, OUT_PATTERN.format(year=year))
         out.to_parquet(out_path, engine="pyarrow", index=False)
         print(f"  wrote -> {out_path}")
-
+ 
     print(f"\nDone. Static SDM files in {OUT_DIR}")
 
 
