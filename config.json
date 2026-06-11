@@ -7,5 +7,6 @@
     "file_prefix": "FL_Climate_5km",
     "local_data_dir": "/Users/jamesparkinson/Library/CloudStorage/OneDrive-TheUniversityofLiverpool/Year 4/COMP702- MSc Project/Msc-data",
     "parquet_dir": "/Users/jamesparkinson/Library/CloudStorage/OneDrive-TheUniversityofLiverpool/Year 4/COMP702- MSc Project/Florida_Master_Parquets",
-    "static_dir": "/Users/jamesparkinson/Library/CloudStorage/OneDrive-TheUniversityofLiverpool/Year 4/COMP702- MSc Project/Florida_Static_Parquets"
+    "static_dir": "/Users/jamesparkinson/Library/CloudStorage/OneDrive-TheUniversityofLiverpool/Year 4/COMP702- MSc Project/Florida_Static_SDM",
+    "static_results_dir": "/Users/jamesparkinson/Library/CloudStorage/OneDrive-TheUniversityofLiverpool/Year 4/COMP702- MSc Project/Florida_Static_SDM/Static_Results"
 }
