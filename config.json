@@ -8,5 +8,6 @@
     "local_data_dir": "/Users/jamesparkinson/Library/CloudStorage/OneDrive-TheUniversityofLiverpool/Year 4/COMP702- MSc Project/Msc-data",
     "parquet_dir": "/Users/jamesparkinson/Library/CloudStorage/OneDrive-TheUniversityofLiverpool/Year 4/COMP702- MSc Project/Florida_Master_Parquets",
     "static_dir": "/Users/jamesparkinson/Library/CloudStorage/OneDrive-TheUniversityofLiverpool/Year 4/COMP702- MSc Project/Florida_Static_SDM",
-    "static_results_dir": "/Users/jamesparkinson/Library/CloudStorage/OneDrive-TheUniversityofLiverpool/Year 4/COMP702- MSc Project/Florida_Static_SDM/Static_Results"
+    "static_results_dir": "/Users/jamesparkinson/Library/CloudStorage/OneDrive-TheUniversityofLiverpool/Year 4/COMP702- MSc Project/Florida_Static_SDM/Static_Results",
+    "weekly_xg_dir": "/Users/jamesparkinson/Library/CloudStorage/OneDrive-TheUniversityofLiverpool/Year 4/COMP702- MSc Project/Weekly_XGBoost"
 }
