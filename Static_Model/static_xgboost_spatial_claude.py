@@ -18,7 +18,7 @@ except ImportError:
     xgb = None
 
 # reuse the validated machinery from the main script
-from static_xgboost_claude import (load_data, add_spatial_blocks, run_cv,
+from Static_Model.static_xgboost_claude import (load_data, add_spatial_blocks, run_cv,
                             correlated_groups, shap_importance,
                             TARGET_COL, METADATA_COLS, OUTPUT_DIR, TRAINING_PARQUET)
 

@@ -239,7 +239,7 @@ for year in years:
     # --- Optional validation pass (FIX 5) ---
     if RUN_VALIDATION:
         try:
-            from validate_parquets import validate_parquet
+            from Static_Model.validate_parquets import validate_parquet
             report = validate_parquet(
                 output_file,
                 cell_col='Grid_ID', date_col='Date',

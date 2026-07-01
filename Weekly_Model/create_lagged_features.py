@@ -226,7 +226,8 @@ def leak_check(master_raw_daily, weekly, n=3):
 def run():
     out = Path(OUTPUT_DIR); out.mkdir(parents=True, exist_ok=True)
     presence = pd.read_parquet(PRESENCE)
-    cells_needed = set(presence[GRID_ID_COL].unique())
+    absence  = pd.read_parquet(WEEKLY_DIR / "nigripalpus_absence_by_cellweek.parquet")
+    cells_needed = set(presence[GRID_ID_COL]) | set(absence[GRID_ID_COL])
     log(f"[run] {len(cells_needed)} trapped cells needed "
         f"(extend this set in Stage 3 if absences add new cells)")
 
