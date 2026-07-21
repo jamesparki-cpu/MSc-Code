@@ -60,7 +60,7 @@ topo_df = topo_df[['Grid_ID', 'elevation', 'slope']]
 # =====================================================================
 # 4. THE MASTER MERGE LOOP
 # =====================================================================
-years = range(config['start_year'], config['end_year'] + 1)
+years = [2025]
 
 for year in years:
     print(f"\n{'='*40}\nProcessing Year: {year}\n{'='*40}")
@@ -81,7 +81,7 @@ for year in years:
     
     # --- Load and Engineer Land Cover ---
     print("Standardizing and Merging Land Cover...")
-    land_df = standardize_static_csv(os.path.join(DATA_DIR, f'FL_LandCover_5km_{year}.csv'))
+    land_df = standardize_static_csv(os.path.join(DATA_DIR, f'FL_LandCover_5km_2018.csv'))
     
     if 'Date' in land_df.columns:
         land_df = land_df.drop(columns=['Date'])
