@@ -61,8 +61,10 @@ CLIM_FFILL_LIMIT = 3
 LAG_WINDOWS = (7, 14, 28)
 RANDOM_STATE = 42
 MASK_KM = 40.0
+MAP_XLIM = (-83.2, -80.3)   # longitude
+MAP_YLIM = (25.8, 29.7)     # latitude
 
-CMAP = "RdYlBu_r"; MARKER = 6; DPI = 130
+CMAP = "RdYlBu_r"; MARKER = 9; DPI = 130
 SEASON_WINDOW = 2; FALLOFF_KM = 120.0; OPACITY_FLOOR = 0.25
 
 XGB_PARAMS = dict(n_estimators=400, learning_rate=0.03, max_depth=4, min_child_weight=5,
@@ -177,11 +179,13 @@ def render(grid, obs, name, week, mon, path):
                norm=Normalize(0,1), linewidths=0, alpha=grid["opacity"].to_numpy())
     # observed trap outcomes on top, full opacity, outlined
     pres = obs[obs.presence==1]; absn = obs[obs.presence==0]
-    ax.scatter(pres.cell_lon, pres.cell_lat, s=42, marker="o", facecolor="none",
+    ax.scatter(pres.cell_lon, pres.cell_lat, s=70, marker="o", facecolor="none",
                edgecolor="black", linewidths=1.3, label=f"observed presence (n={len(pres)})")
-    ax.scatter(absn.cell_lon, absn.cell_lat, s=48, marker="x", color="black",
+    ax.scatter(absn.cell_lon, absn.cell_lat, s=80, marker="x", color="black",
                linewidths=1.6, label=f"observed absence (n={len(absn)})")
     ax.set_aspect(1/np.cos(np.radians(lat.mean())))
+    ax.set_xlim(*MAP_XLIM)
+    ax.set_ylim(*MAP_YLIM)
     ax.set_xlabel("longitude"); ax.set_ylabel("latitude")
     ax.set_title(f"Cx. nigripalpus — {name} nowcast vs observed catches\n"
                  f"ISO week {week} {TEST_YEAR} (~{mon.strftime('%d %b')}) · "

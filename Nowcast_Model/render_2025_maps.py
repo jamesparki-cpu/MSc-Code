@@ -71,6 +71,9 @@ def render(sub, prob_col, title, path, use_opacity=True):
     ax.scatter(sub["lon"], sub["lat"], c=sub[prob_col], s=MARKER, marker="s",
                cmap=CMAP, norm=Normalize(0, 1), linewidths=0, alpha=alpha)
     ax.set_aspect(1 / np.cos(np.radians(sub["lat"].mean())))
+    if trap_mask == True:
+        ax.set_xlim(-83.2, -80.3)   # match the validation map
+        ax.set_ylim(25.8, 29.7)
     ax.set_xlabel("longitude"); ax.set_ylabel("latitude")
     ax.set_title(title, fontsize=10.5)
     sm = plt.cm.ScalarMappable(cmap=CMAP, norm=Normalize(0, 1)); sm.set_array([])
