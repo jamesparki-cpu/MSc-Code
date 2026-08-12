@@ -125,7 +125,7 @@ def build_rolling_features(df):
     Sunday. Built per cell so windows never bleed across cell boundaries."""
     g = df.groupby(GRID_ID_COL, sort=False)
     feats = {}
-
+    
     # --- Step 3: standard accumulations / means ---
     for w in LAG_WINDOWS:
         feats[f"prcp_sum_{w}d"]  = g["prcp"].transform(lambda s, w=w: s.rolling(w, min_periods=minp(w)).sum())
