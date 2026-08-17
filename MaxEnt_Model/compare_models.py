@@ -12,9 +12,15 @@ saved CSVs. XGB/RF keep sqrt(n_events) weighting (as built); MaxEnt is unweighte
 Lead metrics are ROC-AUC and BSS (fair across models); raw PR-AUC is NOT
 comparable because vanilla's prevalence differs, so we report PR-AUC LIFT.
 
+OOF FILES: cv_harness.evaluate already returns the out-of-fold vectors; they are
+now saved rather than discarded, because the baseline comparison, reliability
+diagrams and bootstrap confidence intervals all need row-level predictions and
+none of them can be reconstructed from aggregate metrics.
+
 OUTPUT (to comparison_dir; create the folder / add "comparison_dir" to config)
-  combined_metrics.csv        all four models x both schemes, tidy
-  model_comparison.png        grouped bars: ROC / PR-lift / BSS x scheme
+  combined_metrics.csv                 all four models x both schemes, tidy
+  model_comparison.png                 grouped bars: ROC / PR-lift / BSS x scheme
+  oof_weekly_<model>_<scheme>.parquet  out-of-fold predictions per model per scheme
 """
 import json
 from pathlib import Path
@@ -56,9 +62,23 @@ PRETTY = {"xgboost": "XGBoost", "random_forest": "Random Forest",
 def log(m): print(m, flush=True)
 
 
+def save_oof(df, name, oof_dict):
+    """Persist the harness's out-of-fold vectors, one file per scheme."""
+    keys = [c for c in ("Grid_ID", "iso_year", "iso_week", "presence") if c in df.columns]
+    for scheme, vec in oof_dict.items():
+        o = df[keys].copy()
+        o["oof"] = vec
+        o["model"] = name
+        o["scheme"] = scheme
+        p = OUTPUT_DIR / f"oof_weekly_{name}_{scheme}.parquet"
+        o.to_parquet(p, index=False)
+        log(f"[compare] saved {p.name} ({np.isfinite(vec).mean()*100:.1f}% scored)")
+
+
 def recompute_tree_models(df, feats):
     """Recompute XGB + RF through cv_harness (calibrated, weighted) so their
-    numbers are directly comparable to the MaxEnt CSVs."""
+    numbers are directly comparable to the MaxEnt CSVs. The OOF vectors are saved
+    rather than discarded -- see OOF FILES in the header."""
     df = H.build_blocks(df)
     w = np.sqrt(df["n_events"].clip(lower=1))
     spw = (df.presence == 0).sum() / max((df.presence == 1).sum(), 1)
@@ -70,11 +90,13 @@ def recompute_tree_models(df, feats):
 
     out = []
     if xgb is not None:
-        r, _ = H.evaluate(df, feats, make_xgb, schemes=SCHEMES, sample_weight=w,
-                          calibrate=True, impute=False, model_name="xgboost")
+        r, oof = H.evaluate(df, feats, make_xgb, schemes=SCHEMES, sample_weight=w,
+                            calibrate=True, impute=False, model_name="xgboost")
+        save_oof(df, "xgboost", oof)
         out.append(r)
-    r, _ = H.evaluate(df, feats, make_rf, schemes=SCHEMES, sample_weight=w,
-                      calibrate=True, impute=True, model_name="random_forest")
+    r, oof = H.evaluate(df, feats, make_rf, schemes=SCHEMES, sample_weight=w,
+                        calibrate=True, impute=True, model_name="random_forest")
+    save_oof(df, "random_forest", oof)
     out.append(r)
     return pd.concat(out, ignore_index=True)
 

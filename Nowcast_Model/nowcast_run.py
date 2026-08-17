@@ -14,9 +14,25 @@ Per-model data / weighting (as each was built):
 Expected files (put them in nowcast_dir, or point the config keys at them):
   weekly_model_table.parquet, model_features.json, vanilla_background.parquet
 
-OUTPUT (to nowcast_dir)
-  nowcast_perfold_all.csv   every fold, every model
-  nowcast_summary.csv       pooled + headline row per model
+OUTPUT (to nowcast_results_dir)
+  nowcast_perfold_all.csv        every fold, every model
+  nowcast_summary.csv            pooled + headline row per model
+  oof_nowcast_<variant>.parquet  the out-of-fold prediction for every row
+
+WHY THE OOF FILES: the aggregate metrics cannot be re-used for the baseline
+comparison (persistence is defined on only ~79% of rows, so it needs row-level
+subsetting), for reliability diagrams, or for bootstrap confidence intervals.
+Saving the vectors once means those never require a model re-run -- which matters
+because the two MaxEnt variants take hours.
+
+ROW ALIGNMENT: for xgboost / random_forest / maxent_targetgroup the assembled
+frame is the model table in its original row order, so the OOF vector aligns
+positionally with weekly_model_table.parquet. The keys are saved alongside so
+alignment can be verified by merge rather than assumed. maxent_vanilla is the
+exception: it trains on presences + random background, so its rows are a different
+set and it CANNOT be row-aligned with the other models or with the baselines
+(which are defined on model-table rows). Its OOF is saved for completeness but
+must be excluded from the baseline comparison.
 """
 import json
 from pathlib import Path
@@ -109,16 +125,32 @@ def run():
         make_model = make_factory(variant, df)
         log(f"\n[nowcast] === {variant} === ({len(df):,} rows, "
             f"{df.presence.mean():.1%} presence, {'weighted' if w is not None else 'unweighted'})")
-        pf, pooled, headline = NC.evaluate_nowcast(
+        pf, pooled, headline, oof = NC.evaluate_nowcast(
             df, feats, make_model, sample_weight=w, calibrate=True,
-            impute=impute, model_name=variant)
+            impute=impute, model_name=variant, return_oof=True)
         perfold.append(pf)
         summary.append(pooled); summary.append(headline)
 
+        # persist the OOF vector with its keys (see ROW ALIGNMENT in the header)
+        keys = [c for c in ("Grid_ID", "iso_year", "iso_week", "presence") if c in df.columns]
+        oof_df = df[keys].copy()
+        oof_df["oof"] = oof
+        oof_df["model"] = variant
+        oof_path = OUT_DIR / f"oof_nowcast_{variant}.parquet"
+        oof_df.to_parquet(oof_path, index=False)
+        cov = float(np.isfinite(oof).mean())
+        log(f"[nowcast] saved {oof_path.name} ({len(oof_df):,} rows, "
+            f"{100*cov:.1f}% scored)"
+            + ("  NOTE: different row set -- exclude from baseline comparison"
+               if variant == "maxent_vanilla" else ""))
+
     pd.concat(perfold, ignore_index=True).to_csv(OUT_DIR / "nowcast_perfold_all.csv", index=False)
     pd.DataFrame(summary).to_csv(OUT_DIR / "nowcast_summary.csv", index=False)
-    log(f"\n[done] wrote nowcast_perfold_all.csv + nowcast_summary.csv to {OUT_DIR}")
-    log("[next] nowcast_compare.py reads these and builds the figures.")
+    log(f"\n[done] wrote nowcast_perfold_all.csv + nowcast_summary.csv + "
+        f"oof_nowcast_*.parquet to {OUT_DIR}")
+    log("[next] nowcast_compare.py builds the figures; run_baselines.py adds the "
+        "reference forecasts; baselines.evaluate_with_baselines() consumes the OOF "
+        "files for the matched-subset comparison and bootstrap CIs.")
 
 
 if __name__ == "__main__":

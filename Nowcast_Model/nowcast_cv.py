@@ -24,6 +24,20 @@ TRAIN years only (never the test year) -- honest, leak-free.
 
 Metrics: ROC-AUC, PR-AUC + baseline + lift, Brier Skill Score (same definitions
 as the main pipeline, so numbers are comparable to the climatological results).
+
+NOTE ON THE BSS REFERENCE: score() builds the Brier reference from the prevalence
+of the rows being scored, i.e. the TEST fold's own base rate. That is the
+conventional "sample climatology" reference and it is conservative (harder for the
+model to beat) because it already knows the test period's prevalence. The
+operationally honest alternative uses the TRAINING prevalence, and stronger
+references -- a resolved (cell, week) climatology, and persistence -- are provided
+by baselines.py. Whichever is quoted, state which. See BASELINES.md.
+
+OOF ACCESS: pass return_oof=True to evaluate_nowcast to also receive the pooled
+out-of-fold prediction vector. It is required for the baseline comparison,
+reliability diagrams and bootstrap confidence intervals, none of which can be
+reconstructed from the aggregate metrics. The default return signature is
+unchanged, so existing callers keep working.
 """
 from typing import Callable, Optional, Sequence
 import numpy as np
@@ -99,11 +113,16 @@ def score(y, p):
 
 # ----- orchestrator ---------------------------------------------------------
 def evaluate_nowcast(df, feats, make_model, sample_weight=None,
-                     calibrate=True, impute=False, model_name="model", verbose=True):
-    """Forward-chaining evaluation. Returns (per_fold_df, pooled_row, headline_row).
+                     calibrate=True, impute=False, model_name="model", verbose=True,
+                     return_oof=False):
+    """Forward-chaining evaluation. Returns (per_fold_df, pooled_row, headline_row),
+    or (per_fold_df, pooled_row, headline_row, oof) when return_oof=True.
       per_fold : one row per (train_years -> test_year) fold
       pooled   : one metric over all forward-chained OOF predictions
       headline : the final split train[:-1] -> last year (the deployment case)
+      oof      : float array of len(df), the pooled out-of-fold prediction per row,
+                 NaN for rows never in a test fold (the first year is train-only
+                 under forward chaining). Positionally aligned with df.
     """
     X = df[list(feats)]; y = df[TARGET].astype(int)
     w = sample_weight
@@ -133,4 +152,6 @@ def evaluate_nowcast(df, feats, make_model, sample_weight=None,
               f"BSS {pooled['bss']}", flush=True)
         print(f"[{model_name}] HEADLINE (train ->{years[-1]}): ROC {headline['roc_auc']} | "
               f"BSS {headline['bss']}", flush=True)
+    if return_oof:
+        return per_fold, pd.Series(pooled), pd.Series(headline), oof
     return per_fold, pd.Series(pooled), pd.Series(headline)
