@@ -77,8 +77,7 @@ def save_oof(df, name, oof_dict):
 
 def recompute_tree_models(df, feats):
     """Recompute XGB + RF through cv_harness (calibrated, weighted) so their
-    numbers are directly comparable to the MaxEnt CSVs. The OOF vectors are saved
-    rather than discarded -- see OOF FILES in the header."""
+    numbers are directly comparable to the MaxEnt CSVs."""
     df = H.build_blocks(df)
     w = np.sqrt(df["n_events"].clip(lower=1))
     spw = (df.presence == 0).sum() / max((df.presence == 1).sum(), 1)
@@ -88,17 +87,15 @@ def recompute_tree_models(df, feats):
     def make_rf():
         return RandomForestClassifier(**RF_PARAMS)
 
-    out = []
+    out, oof_all = [], {}
     if xgb is not None:
-        r, oof = H.evaluate(df, feats, make_xgb, schemes=SCHEMES, sample_weight=w,
-                            calibrate=True, impute=False, model_name="xgboost")
-        save_oof(df, "xgboost", oof)
-        out.append(r)
-    r, oof = H.evaluate(df, feats, make_rf, schemes=SCHEMES, sample_weight=w,
-                        calibrate=True, impute=True, model_name="random_forest")
-    save_oof(df, "random_forest", oof)
-    out.append(r)
-    return pd.concat(out, ignore_index=True)
+        r, o = H.evaluate(df, feats, make_xgb, schemes=SCHEMES, sample_weight=w,
+                          calibrate=True, impute=False, model_name="xgboost")
+        out.append(r); oof_all["xgboost"] = o
+    r, o = H.evaluate(df, feats, make_rf, schemes=SCHEMES, sample_weight=w,
+                      calibrate=True, impute=True, model_name="random_forest")
+    out.append(r); oof_all["random_forest"] = o
+    return pd.concat(out, ignore_index=True), df, oof_all
 
 
 def read_maxent_metrics():
@@ -148,7 +145,18 @@ def run():
     df = pd.read_parquet(FEAT_DIR / "weekly_model_table.parquet")
 
     log("[compare] recomputing XGB + RF (fast) through the shared harness...")
-    tree = recompute_tree_models(df, feats)
+    tree, blocked, oof_all = recompute_tree_models(df, feats)
+    # persist calibrated OOF in long form for the bootstrap
+    keys = blocked[[H.GRID_ID_COL, "iso_year", "spatial_block", "presence"]].reset_index(drop=True)
+    rows = []
+    for model, schemes in oof_all.items():
+        for scheme, p in schemes.items():
+            r = keys.copy()
+            r["model"], r["scheme"], r["p"] = model, scheme, p
+            rows.append(r)
+    pd.concat(rows, ignore_index=True).to_csv(OUTPUT_DIR / "oof_long_trees.csv", index=False)
+    log(f"[compare] wrote oof_long_trees.csv ({sum(len(r) for r in rows):,} rows)")
+    
     maxent = read_maxent_metrics()
     combined = pd.concat([tree, maxent], ignore_index=True)
     combined = combined[combined["scheme"].isin(SCHEMES)]

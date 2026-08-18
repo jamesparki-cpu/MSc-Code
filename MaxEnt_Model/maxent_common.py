@@ -60,7 +60,7 @@ def evaluate_variant(df, feats, variant, out_dir):
                           calibrate=True, impute=True,   # MaxEnt fit rejects NaN
                           model_name=f"maxent_{variant}")
     res.to_csv(out_dir / f"cv_metrics_maxent_{variant}.csv", index=False)
-    diag = df[[H.GRID_ID_COL, "iso_year", "iso_week", "presence"]].copy()
+    diag = df[[H.GRID_ID_COL, "iso_year", "iso_week", "presence", "spatial_block"]].copy()
     for scheme, p in oof.items():
         diag[f"oof_{scheme}"] = p
     diag.to_csv(out_dir / f"oof_maxent_{variant}.csv", index=False)

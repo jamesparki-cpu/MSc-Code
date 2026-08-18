@@ -112,7 +112,7 @@ def run():
     log(f"[nowcast] table {len(table):,} rows | features {len(feats)} | "
         f"background {'loaded' if bg is not None else 'MISSING (skip vanilla)'}")
 
-    perfold, summary = [], []
+    perfold, summary, oof_rows = [], [], []
     for variant in RUN_MODELS:
         if variant.startswith("maxent") and MaxentModel is None:
             log(f"[nowcast] skip {variant}: elapid not installed"); continue
@@ -125,12 +125,16 @@ def run():
         make_model = make_factory(variant, df)
         log(f"\n[nowcast] === {variant} === ({len(df):,} rows, "
             f"{df.presence.mean():.1%} presence, {'weighted' if w is not None else 'unweighted'})")
-        pf, pooled, headline, oof = NC.evaluate_nowcast(
+        pf, pooled, headline, oof, test_of = NC.evaluate_nowcast(
             df, feats, make_model, sample_weight=w, calibrate=True,
-            impute=impute, model_name=variant, return_oof=True)
+            impute=impute, model_name=variant)
         perfold.append(pf)
         summary.append(pooled); summary.append(headline)
 
+        r = df[["Grid_ID", "presence"]].copy()
+        r["model"], r["p"], r["test_year"] = variant, oof, test_of
+        oof_rows.append(r.dropna(subset=["p"]))
+        
         # persist the OOF vector with its keys (see ROW ALIGNMENT in the header)
         keys = [c for c in ("Grid_ID", "iso_year", "iso_week", "presence") if c in df.columns]
         oof_df = df[keys].copy()

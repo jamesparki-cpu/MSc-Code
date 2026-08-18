@@ -130,11 +130,13 @@ def evaluate_nowcast(df, feats, make_model, sample_weight=None,
     years = sorted(df[YEAR].unique())
 
     oof = np.full(len(df), np.nan)
+    test_of = np.full(len(df), np.nan)
     rows = []
     for train_years, test_year in forward_chain_folds(years):
         p, te = _fold_predict(df, X, y, w, train_years, test_year, make_model,
                               calibrate, impute, medians)
         oof[te] = p
+        test_of[te] = test_year
         s = score(y[te].to_numpy(), p)
         s.update(model=model_name, train_years=f"{min(train_years)}-{max(train_years)}",
                  n_train_years=len(train_years), test_year=test_year)
@@ -152,6 +154,4 @@ def evaluate_nowcast(df, feats, make_model, sample_weight=None,
               f"BSS {pooled['bss']}", flush=True)
         print(f"[{model_name}] HEADLINE (train ->{years[-1]}): ROC {headline['roc_auc']} | "
               f"BSS {headline['bss']}", flush=True)
-    if return_oof:
-        return per_fold, pd.Series(pooled), pd.Series(headline), oof
-    return per_fold, pd.Series(pooled), pd.Series(headline)
+    return per_fold, pd.Series(pooled), pd.Series(headline), oof, test_of  
