@@ -144,11 +144,12 @@ def run():
             + ("  NOTE: different row set -- exclude from baseline comparison"
                if variant == "maxent_vanilla" else ""))
 
-    pd.concat(perfold, ignore_index=True).to_csv(OUT_DIR / "nowcast_perfold_all.csv", index=False)
-    pd.DataFrame(summary).to_csv(OUT_DIR / "nowcast_summary.csv", index=False)
-    log(f"\n[done] wrote nowcast_perfold_all.csv + nowcast_summary.csv + "
-        f"oof_nowcast_*.parquet to {OUT_DIR}")
-    log("[next] nowcast_compare.py builds the figures; run_baselines.py adds the "
+        pd.concat(perfold, ignore_index=True).to_csv(OUT_DIR / "nowcast_perfold_all.csv", index=False)
+        pd.DataFrame(summary).to_csv(OUT_DIR / "nowcast_summary.csv", index=False)
+        pd.concat(oof_rows, ignore_index=True).to_csv(OUT_DIR / "nowcast_oof_long.csv", index=False)
+        log(f"\n[done] wrote nowcast_perfold_all.csv + nowcast_summary.csv + "
+            f"oof_nowcast_*.parquet to {OUT_DIR}")
+        log("[next] nowcast_compare.py builds the figures; run_baselines.py adds the "
         "reference forecasts; baselines.evaluate_with_baselines() consumes the OOF "
         "files for the matched-subset comparison and bootstrap CIs.")
 
