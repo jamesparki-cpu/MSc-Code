@@ -267,7 +267,7 @@ BG_FILE   = Path(cfg.get("nowcast_background",
                          str(Path(cfg.get("maxent_dir", str(DATA_DIR))) / "vanilla_background.parquet")))
 OUT_DIR   = Path(cfg["nowcast_dir"]) / "Validation_Results"
 
-VARIANT     = "targetgroup"        # or "vanilla"
+VARIANT     = "vanilla"        # or "vanilla"
 TEST_YEAR   = 2018
 TRAIN_YEARS = list(range(2013, TEST_YEAR))
 CALIB_YEAR  = 2017

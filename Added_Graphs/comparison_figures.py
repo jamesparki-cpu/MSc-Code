@@ -26,8 +26,14 @@ it before every stage is finished.
          Bins are QUANTILE (equal-count), not equal-width: predictions are
          concentrated near the top (prevalence ~0.78), so equal-width bins would
          be mostly empty and noisy.
-         MaxEnt OOF is read from oof_maxent_*.csv; XGB/RF OOF is recomputed via
-         cv_harness (fast) because compare_models.py does not save it.
+         OOF predictions are READ FROM DISK, never recomputed: compare_models.py
+         now persists oof_long_trees.csv (and build_oof_long.py merges MaxEnt in
+         to give oof_long.csv). Recomputing here would silently describe a
+         different fit from the one in combined_metrics.csv if the model params
+         ever diverged between the two scripts.
+
+STYLE: ordering, display names, colours, decimals and axis labels come from
+report_style.py. Nothing style-related is defined locally.
 """
 import json, glob
 from pathlib import Path
@@ -37,23 +43,18 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+import report_style as S
+
 # ============================== CONFIG ======================================
 with open("config.json") as f:
     cfg = json.load(f)
 DATA_DIR       = Path(cfg.get("weekly_xg_dir", "."))
 MAXENT_DIR     = Path(cfg.get("maxent_dir", str(DATA_DIR)))
-VALIDATION_DIR = Path(cfg.get("validation_dir", str(DATA_DIR / "Validation_Maps")))
+NOWCAST_DIR   = Path(cfg.get("nowcast_dir"))
+VALIDATION_DIR = Path(cfg.get("validation_dir", str(NOWCAST_DIR / "Validation_Results")))
 SHAP_DIR       = Path(cfg.get("shap_dir", str(DATA_DIR / "SHAP_Results")))
 OUT_DIR        = Path(cfg["comparison_dir"])
 
-MODEL_ORDER = ["xgboost", "random_forest", "maxent_targetgroup", "maxent_vanilla"]
-PRETTY = {"xgboost": "XGBoost", "random_forest": "Random Forest",
-          "maxent_targetgroup": "MaxEnt (target-group)", "maxent_vanilla": "MaxEnt (vanilla)"}
-COLORS = {"xgboost": "#2166ac", "random_forest": "#238b45",
-          "maxent_targetgroup": "#d7301f", "maxent_vanilla": "#6a51a3"}
-BLOCK_COLORS = {"temperature": "#d7301f", "precipitation": "#2166ac", "moisture": "#41b6c4",
-                "vegetation": "#238b45", "seasonality": "#6a51a3", "land_cover": "#b8860b",
-                "terrain": "#777777", "other": "#cccccc"}
 SEASON_OF_WEEK = {6: "Winter", 20: "Spring", 30: "Summer", 32: "Summer", 43: "Autumn"}
 MIN_ABS_FOR_TRUST = 10        # weeks with fewer absences are flagged as low power
 N_BINS = 10
@@ -71,15 +72,15 @@ def fig_seasonal_validation():
     d = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
     d = d.drop_duplicates(["model", "week"], keep="last")
     weeks = sorted(d.week.unique())
-    models = [m for m in MODEL_ORDER if m in d.model.unique()]
+    models = S.models_in(d.model.unique())
     log(f"[fig1] {len(d)} rows | weeks {weeks} | models {models}")
 
     x = np.arange(len(weeks)); width = 0.8 / max(len(models), 1)
     fig, axes = plt.subplots(2, 1, figsize=(10, 8.5), sharex=True)
 
-    for panel, (col, title, ref, ylab) in enumerate(
-            [("roc_auc", "Discrimination — ROC-AUC per week", 0.5, "ROC-AUC"),
-             ("bss", "Calibration — Brier Skill Score per week", 0.0, "BSS")]):
+    for panel, (col, title) in enumerate(
+            [("roc_auc", "Discrimination — ROC-AUC per week"),
+             ("bss", "Calibration — Brier Skill Score per week")]):
         ax = axes[panel]
         for i, m in enumerate(models):
             vals, hatches = [], []
@@ -89,14 +90,14 @@ def fig_seasonal_validation():
                 nab = int(r.n_abs.iloc[0]) if len(r) else 0
                 hatches.append("//" if nab < MIN_ABS_FOR_TRUST else "")
             bars = ax.bar(x + (i - (len(models)-1)/2)*width, vals, width,
-                          label=PRETTY.get(m, m), color=COLORS.get(m),
+                          label=S.model_label(m), color=S.MODEL_COLOURS.get(m),
                           edgecolor="black", linewidth=0.5)
             for b, h in zip(bars, hatches):
                 if h: b.set_hatch(h)
-        ax.axhline(ref, color="grey", ls="--", lw=1)
-        ax.set_ylabel(ylab); ax.set_title(title, fontsize=11)
+        S.add_reference_line(ax, col)
+        ax.set_ylabel(S.metric_label(col)); ax.set_title(title, fontsize=11)
         ax.grid(axis="y", alpha=0.3)
-        if col == "roc_auc": ax.set_ylim(0.4, 1.05)
+        if col == "roc_auc": ax.set_ylim(0.4, 1.05)   # wider than S.YLIM: weekly n is small
 
     labels = []
     for w in weeks:
@@ -109,8 +110,7 @@ def fig_seasonal_validation():
                  f"{MIN_ABS_FOR_TRUST} observed absences: metric is low-power, do not over-read",
                  fontsize=12)
     fig.tight_layout(rect=[0, 0, 1, 0.93])
-    fig.savefig(OUT_DIR / "seasonal_validation.png", dpi=150); plt.close(fig)
-    log("[fig1] wrote seasonal_validation.png")
+    S.save(fig, OUT_DIR / "seasonal_validation.png")
 
 
 # ----------------------------------------------------------------- FIGURE 2
@@ -120,9 +120,8 @@ def fig_shap_blocks():
         log(f"[fig2] SKIP: {f} not found")
         return
     d = pd.read_csv(f)
-    models = [m for m in MODEL_ORDER if m in d.model.unique()]
-    blocks = (d.groupby("group").pct_of_total.mean()
-                .sort_values(ascending=False).index.tolist())
+    models = S.models_in(d.model.unique())
+    blocks = S.blocks_in(d.group.unique())
     log(f"[fig2] models {models} | blocks {blocks}")
 
     fig, axes = plt.subplots(1, 2, figsize=(15, 5.5),
@@ -133,11 +132,11 @@ def fig_shap_blocks():
     for i, m in enumerate(models):
         vals = [float(d[(d.model == m) & (d.group == b)].pct_of_total.iloc[0])
                 if len(d[(d.model == m) & (d.group == b)]) else np.nan for b in blocks]
-        ax.bar(x + (i - (len(models)-1)/2)*width, vals, width, label=PRETTY.get(m, m),
-               color=COLORS.get(m), edgecolor="black", linewidth=0.5)
-    ax.set_xticks(x); ax.set_xticklabels([b.replace("_", " ") for b in blocks],
+        ax.bar(x + (i - (len(models)-1)/2)*width, vals, width, label=S.model_label(m),
+               color=S.MODEL_COLOURS.get(m), edgecolor=S.BAR_EDGE, linewidth=S.BAR_EDGE_LW)
+    ax.set_xticks(x); ax.set_xticklabels([S.block_label(b) for b in blocks],
                                          rotation=20, ha="right", fontsize=9)
-    ax.set_ylabel("% of total |SHAP|"); ax.grid(axis="y", alpha=0.3)
+    ax.set_ylabel(S.metric_label("pct_of_total")); ax.grid(axis="y", alpha=0.3)
     ax.set_title("(a) Block importance by model", fontsize=11); ax.legend(fontsize=9)
 
     # (b) 100% stacked composition per model
@@ -146,12 +145,12 @@ def fig_shap_blocks():
         vals = np.array([float(d[(d.model == m) & (d.group == b)].pct_of_total.iloc[0])
                          if len(d[(d.model == m) & (d.group == b)]) else 0.0 for m in models])
         ax.bar(range(len(models)), vals, 0.6, bottom=bottoms,
-               label=b.replace("_", " "), color=BLOCK_COLORS.get(b, "#999"),
+               label=S.block_label(b), color=S.BLOCK_COLOURS.get(b, "#999"),
                edgecolor="white", linewidth=0.6)
         bottoms += vals
     ax.set_xticks(range(len(models)))
-    ax.set_xticklabels([PRETTY.get(m, m).replace(" (", "\n(") for m in models], fontsize=8)
-    ax.set_ylabel("% of total |SHAP|"); ax.set_ylim(0, 100)
+    ax.set_xticklabels([S.model_label(m, wrapped=True) for m in models], fontsize=8)
+    ax.set_ylabel(S.metric_label("pct_of_total")); S.apply_ylim(ax, "pct_of_total")
     ax.set_title("(b) Composition", fontsize=11)
     ax.legend(fontsize=7, loc="center left", bbox_to_anchor=(1.02, 0.5))
 
@@ -159,9 +158,7 @@ def fig_shap_blocks():
                  "(percentages only — raw |SHAP| is not comparable across model families)",
                  fontsize=12)
     fig.tight_layout(rect=[0, 0, 1, 0.9])
-    fig.savefig(OUT_DIR / "shap_blocks_cross_model.png", dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    log("[fig2] wrote shap_blocks_cross_model.png")
+    S.save(fig, OUT_DIR / "shap_blocks_cross_model.png")
 
 
 # ----------------------------------------------------------------- FIGURE 3
@@ -179,41 +176,54 @@ def reliability(y, p, n_bins=N_BINS, min_count=15):
 
 
 def collect_oof():
-    """{model: DataFrame[presence, oof_spatiotemporal, oof_spatial]}."""
+    """{model: DataFrame[presence, oof_spatiotemporal, oof_spatial, ...]}.
+
+    READ ONLY -- nothing is refitted here. Preference order:
+      1. oof_long.csv       all four models, written by build_oof_long.py
+      2. oof_long_trees.csv (compare_models.py) + oof_maxent_*.csv (maxent runs)
+
+    The previous version refitted XGB/RF with a SECOND copy of the
+    hyperparameters pasted into this file. If those ever drifted from
+    compare_models.py, these reliability diagrams would have described a
+    different model from the one in combined_metrics.csv, with nothing to
+    signal it. Reading the persisted predictions makes that impossible.
+    """
     out = {}
+
+    def absorb(long_df, source):
+        for model, sub in long_df.groupby("model", sort=False):
+            cols = {}
+            for scheme, g in sub.groupby("scheme", sort=False):
+                cols[f"oof_{scheme}"] = g["p"].to_numpy()
+                y = g["presence"].to_numpy()
+            # every scheme scores the same rows in the same order, so a single
+            # presence vector is valid; guard in case that ever stops holding
+            lens = {len(v) for v in cols.values()}
+            if len(lens) != 1:
+                log(f"[fig3] SKIP {model} from {source}: schemes have unequal "
+                    f"row counts {sorted(lens)}")
+                continue
+            out[model] = pd.DataFrame({"presence": y, **cols})
+            log(f"[fig3] {model}: {len(y):,} rows, schemes "
+                f"{[c.replace('oof_', '') for c in cols]} <- {source}")
+
+    long_path = OUT_DIR / "oof_long.csv"
+    if long_path.exists():
+        absorb(pd.read_csv(long_path), long_path.name)
+        return out
+
+    trees_path = OUT_DIR / "oof_long_trees.csv"
+    if trees_path.exists():
+        absorb(pd.read_csv(trees_path), trees_path.name)
+    else:
+        log(f"[fig3] {trees_path.name} not found -- run compare_models.py first")
+
     for f in sorted(glob.glob(str(MAXENT_DIR / "oof_maxent_*.csv"))):
         name = "maxent_" + Path(f).stem.replace("oof_maxent_", "")
-        out[name] = pd.read_csv(f)
-        log(f"[fig3] read {Path(f).name}")
-    # XGB/RF: recompute (compare_models.py doesn't persist OOF)
-    try:
-        import cv_harness as H
-        from sklearn.ensemble import RandomForestClassifier
-        import xgboost as xgb
-        feats = json.load(open(DATA_DIR / "model_features.json"))["model_features"]
-        tbl = H.build_blocks(pd.read_parquet(DATA_DIR / "weekly_model_table.parquet"))
-        w = np.sqrt(tbl["n_events"].clip(lower=1))
-        spw = (tbl.presence == 0).sum() / max((tbl.presence == 1).sum(), 1)
-        specs = {
-            "xgboost": (lambda: xgb.XGBClassifier(
-                n_estimators=400, learning_rate=0.03, max_depth=4, min_child_weight=5,
-                subsample=0.8, colsample_bytree=0.8, reg_lambda=5.0, random_state=42,
-                objective="binary:logistic", eval_metric="logloss", tree_method="hist",
-                scale_pos_weight=spw), False),
-            "random_forest": (lambda: RandomForestClassifier(
-                n_estimators=400, max_depth=12, min_samples_leaf=5,
-                class_weight="balanced", n_jobs=-1, random_state=42), True),
-        }
-        for name, (mk, imp) in specs.items():
-            log(f"[fig3] recomputing OOF for {name} (this takes a few minutes)")
-            _, oof = H.evaluate(tbl, feats, mk, schemes=("spatiotemporal", "spatial"),
-                                sample_weight=w, calibrate=True, impute=imp,
-                                model_name=name, verbose=False)
-            out[name] = pd.DataFrame({"presence": tbl.presence.values,
-                                      "oof_spatiotemporal": oof["spatiotemporal"],
-                                      "oof_spatial": oof["spatial"]})
-    except Exception as e:
-        log(f"[fig3] XGB/RF OOF unavailable ({type(e).__name__}: {e}) — plotting MaxEnt only")
+        d = pd.read_csv(f)                       # already wide: oof_<scheme>
+        out[name] = d
+        log(f"[fig3] {name}: {len(d):,} rows <- {Path(f).name}")
+
     return out
 
 
@@ -222,23 +232,23 @@ def fig_calibration():
     if not oof:
         log("[fig3] SKIP: no OOF predictions found")
         return
-    models = [m for m in MODEL_ORDER if m in oof]
+    models = S.models_in(oof.keys())
     schemes = [("oof_spatiotemporal", "Spatiotemporal CV"), ("oof_spatial", "Spatial CV")]
     fig, axes = plt.subplots(2, 2, figsize=(12, 9),
                              gridspec_kw={"height_ratios": [2.4, 1.0]})
 
     for j, (col, title) in enumerate(schemes):
         ax, axh = axes[0, j], axes[1, j]
-        ax.plot([0, 1], [0, 1], color="grey", ls="--", lw=1.2, label="perfect calibration")
+        ax.plot([0, 1], [0, 1], color=S.GREY, ls="--", lw=1.2, label="perfect calibration")
         for m in models:
             d = oof[m]
             if col not in d.columns: continue
             g = reliability(d["presence"], d[col])
             if g is None or g.empty: continue
             ax.plot(g.mean_pred, g.obs, marker="o", ms=5, lw=1.8,
-                    color=COLORS.get(m), label=PRETTY.get(m, m))
+                    color=S.MODEL_COLOURS.get(m), label=S.model_label(m))
             axh.hist(d[col].dropna(), bins=30, histtype="step", lw=1.5,
-                     color=COLORS.get(m), density=True)
+                     color=S.MODEL_COLOURS.get(m), density=True)
         ax.set_xlim(0, 1); ax.set_ylim(0, 1)
         ax.set_xlabel("mean predicted suitability"); ax.set_ylabel("observed presence frequency")
         ax.set_title(title, fontsize=11); ax.grid(alpha=0.3)
@@ -250,11 +260,11 @@ def fig_calibration():
                  "below it = over-predicting suitability (quantile bins, ≥15 obs each)",
                  fontsize=12)
     fig.tight_layout(rect=[0, 0, 1, 0.92])
-    fig.savefig(OUT_DIR / "calibration_curves.png", dpi=150); plt.close(fig)
-    log("[fig3] wrote calibration_curves.png")
+    S.save(fig, OUT_DIR / "calibration_curves.png")
 
 
 def run():
+    S.set_thesis_style(constrained=False)   # these figures use tight_layout(rect=...)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     fig_seasonal_validation()
     fig_shap_blocks()

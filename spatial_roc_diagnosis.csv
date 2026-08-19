@@ -1,0 +1,9 @@
+model,scheme,calibrate,n,roc_auc,bss
+xgboost,spatial,False,21608,0.664,-0.516
+xgboost,spatiotemporal,False,21608,0.858,-0.02
+xgboost,spatial,True,21608,0.405,-0.148
+xgboost,spatiotemporal,True,21608,0.85,0.282
+random_forest,spatial,False,21608,0.655,-0.218
+random_forest,spatiotemporal,False,21608,0.854,0.116
+random_forest,spatial,True,21608,0.439,-0.14
+random_forest,spatiotemporal,True,21608,0.842,0.267
