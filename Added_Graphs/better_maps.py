@@ -83,7 +83,7 @@ DRAW_INSET = True             # inset locator (auto-skipped on full-extent maps)
 DRAW_SCALEBAR = True
 DRAW_NORTH_ARROW = True
 DRAW_GRATICULE = True
-USE_CARTOPY = True            # falls back silently to the derived footprint outline
+USE_CARTOPY = False            # falls back silently to the derived footprint outline
 
 CAPTION = ("Opacity encodes proximity to surveillance data (faded = extrapolated), "
            "not model certainty.")
@@ -151,8 +151,26 @@ def detect_series(surf):
 
 
 # ----- gridding: the fix for the inter-marker gaps --------------------------
-def _infer_step(vals):
-    """Median spacing between consecutive distinct coordinates."""
+def _infer_step(vals, across=None):
+    """Median neighbour spacing.
+
+    On a metric (5 km) grid, longitude spacing in DEGREES widens with latitude,
+    so rows do not share a common longitude lattice. Taking np.unique across the
+    whole state then returns the tiny gaps between near-duplicate values from
+    different rows, which over-resolves the raster and leaves interior cells
+    empty. Measuring WITHIN each line gives the true cell size.
+    """
+    if across is not None:
+        d = []
+        for k in np.unique(across):
+            v = np.sort(np.asarray(vals)[across == k])
+            if v.size > 1:
+                d.append(np.diff(v))
+        if d:
+            d = np.concatenate(d)
+            d = d[d > 1e-9]
+            if d.size:
+                return float(np.median(d))
     u = np.unique(vals)
     if u.size < 2:
         return 0.05
@@ -173,8 +191,11 @@ def build_raster(sub, value_col, alpha_col=None, step=None):
     lat = sub["lat"].to_numpy(float)
     val = sub[value_col].to_numpy(float)
 
-    dx, dy = (step or (_infer_step(lon), _infer_step(lat)))[:2] if step else \
-             (_infer_step(lon), _infer_step(lat))
+    if step:
+        dx, dy = step[0], step[1]
+    else:
+        dx = _infer_step(lon, across=lat)   # lon spacing within each latitude row
+        dy = _infer_step(lat)               # latitudes are a clean lattice
 
     lon0, lat0 = lon.min(), lat.min()
     nx = int(round((lon.max() - lon0) / dx)) + 1
@@ -189,16 +210,35 @@ def build_raster(sub, value_col, alpha_col=None, step=None):
     np.add.at(vsum, (iy[ok], ix[ok]), val[ok])
     np.add.at(cnt, (iy[ok], ix[ok]), 1.0)
 
-    with np.errstate(invalid="ignore", divide="ignore"):
-        Z = np.where(cnt > 0, vsum / np.maximum(cnt, 1), np.nan)
-    Z = np.ma.masked_invalid(Z)
-
     A = None
     if alpha_col is not None and alpha_col in sub.columns:
         av = sub[alpha_col].to_numpy(float)
         asum = np.zeros((ny, nx))
         np.add.at(asum, (iy[ok], ix[ok]), np.nan_to_num(av[ok]))
         A = np.where(cnt > 0, asum / np.maximum(cnt, 1), 0.0)
+
+    with np.errstate(invalid="ignore", divide="ignore"):
+        Z = np.where(cnt > 0, vsum / np.maximum(cnt, 1), np.nan)
+    Z = np.ma.masked_invalid(Z)
+    # Fill interior gaps left by binning an irregular metric grid onto a regular
+    # lattice. Only cells enclosed by real data are filled, from their nearest
+    # valid neighbour -- this is a rendering repair, not imputation: genuinely
+    # missing regions stay masked and still render as gaps.
+    try:
+        from scipy.ndimage import binary_closing, distance_transform_edt
+        real = cnt > 0
+        fillable = binary_closing(real, structure=np.ones((3, 3)),
+                                  iterations=2) & ~real
+        if fillable.any():
+            _, (jy, jx) = distance_transform_edt(~real, return_indices=True)
+            Zf = Z.filled(np.nan)
+            Zf[fillable] = Zf[jy[fillable], jx[fillable]]
+            Z = np.ma.masked_invalid(Zf)
+            if A is not None:
+                A[fillable] = A[jy[fillable], jx[fillable]]
+            cnt[fillable] = 1
+    except Exception:
+        pass
 
     extent = (lon0 - dx / 2, lon0 + (nx - 0.5) * dx,
               lat0 - dy / 2, lat0 + (ny - 0.5) * dy)
@@ -223,31 +263,6 @@ def draw_raster(ax, Z, A, extent, cmap, norm, backend=RENDER_BACKEND):
     rgba[Z.mask, 3] = 0.0                      # sea / outside grid = transparent
     return ax.imshow(rgba, extent=extent, origin="lower",
                      interpolation="nearest", zorder=1)
-
-
-# ----- boundary overlay -----------------------------------------------------
-def _cartopy_boundary(ax):
-    """True coastline + state borders. Returns True if cartopy supplied them."""
-    if not USE_CARTOPY:
-        return False
-    try:
-        import cartopy.feature as cfeature
-    except Exception:
-        return False
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            for feat, lw, col in ((cfeature.COASTLINE, 0.7, "0.15"),
-                                  (cfeature.STATES.with_scale("10m"), 0.5, "0.35")):
-                geoms = list(feat.geometries())
-                for g in geoms:
-                    for poly in (g.geoms if hasattr(g, "geoms") else [g]):
-                        xy = np.asarray(getattr(poly, "coords", None) or
-                                        poly.exterior.coords)
-                        ax.plot(xy[:, 0], xy[:, 1], lw=lw, color=col, zorder=4)
-        return True
-    except Exception:
-        return False
 
 
 def footprint_outline(ax, Z, extent, lw=0.8, color="0.15"):
@@ -399,7 +414,42 @@ def render_frame(sub, spec, title_main, title_sub, path,
 
     fig.savefig(path, dpi=DPI, bbox_inches="tight")
     plt.close(fig)
+    
+# ----- boundary overlay -----------------------------------------------------
+def _cartopy_boundary(ax):
+    """True coastline + state borders. Returns True only if fully successful.
 
+    Segments are collected first and drawn only once every geometry has been
+    read, so a mid-loop failure cannot leave half a boundary on the axes while
+    the footprint fallback also runs.
+    """
+    if not USE_CARTOPY:
+        return False
+    try:
+        import cartopy.feature as cfeature
+    except Exception:
+        return False
+    x0, x1 = ax.get_xlim(); y0, y1 = ax.get_ylim()
+    pending = []
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            for feat, lw, col in ((cfeature.COASTLINE, 0.7, "0.15"),
+                                  (cfeature.STATES.with_scale("10m"), 0.5, "0.35")):
+                for g in feat.geometries():
+                    for poly in (g.geoms if hasattr(g, "geoms") else [g]):
+                        xy = np.asarray(getattr(poly, "coords", None) or
+                                        poly.exterior.coords)
+                        # skip anything wholly outside the view
+                        if (xy[:, 0].max() < x0 or xy[:, 0].min() > x1 or
+                                xy[:, 1].max() < y0 or xy[:, 1].min() > y1):
+                            continue
+                        pending.append((xy, lw, col))
+    except Exception:
+        return False
+    for xy, lw, col in pending:
+        ax.plot(xy[:, 0], xy[:, 1], lw=lw, color=col, zorder=4)
+    return bool(pending)
 
 # ----- driver ---------------------------------------------------------------
 def iso_monday_label(week, year=2015):
@@ -467,7 +517,7 @@ def run(weeks=None, series=None, config_path=CONFIG_PATH, all_weeks=False,
     set_thesis_style()
     cfg = load_config(config_path)
     results = Path(cfg["weekly_results_dir"])
-    out_dir = Path(cfg.get("better_maps_dir", results / "maps_v2"))
+    out_dir = Path(cfg.get("better_maps_dir"))
     out_dir.mkdir(parents=True, exist_ok=True)
 
     surf = pd.read_parquet(results / "surface_predictions.parquet")
