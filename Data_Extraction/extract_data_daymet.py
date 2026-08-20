@@ -14,7 +14,7 @@ states = ee.FeatureCollection("TIGER/2018/States")
 florida = states.filter(ee.Filter.eq('NAME', config['target_state']))
 
 # =====================================================================
-# THE FIX: Create a mathematically perfect 5km Point Grid natively in GEE
+# Create a mathematically perfect 5km Point Grid natively in GEE
 # =====================================================================
 print("Generating native 5km point grid...")
 
