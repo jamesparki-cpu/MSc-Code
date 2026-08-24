@@ -19,6 +19,7 @@ none of them can be reconstructed from aggregate metrics.
 
 OUTPUT (to comparison_dir; create the folder / add "comparison_dir" to config)
   combined_metrics.csv                 all four models x both schemes, tidy
+  tree_scheme_metrics.csv              XGB + RF x all four schemes, tidy
   model_comparison.png                 grouped bars: ROC / PR-lift / BSS x scheme
   oof_weekly_<model>_<scheme>.parquet  out-of-fold predictions per model per scheme
   oof_long_trees.csv                   the same, tidy/long, for the bootstrap
@@ -50,6 +51,18 @@ OUTPUT_DIR = Path(cfg.get("comparison_dir",
                           str(FEAT_DIR.parent / "Comparison_Results")))
 
 SCHEMES = ("spatiotemporal", "spatial")   # the schemes MaxEnt ran
+
+# The trees are cheap, so they run every scheme. MaxEnt is not, so the
+# four-model table stays restricted to SCHEMES above.
+#
+# WHY NOT REUSE cv_metrics.csv: train_weekly_xgboost.py writes that file using
+# its OWN ensure_blocks() partition and scores the RAW pooled OOF. Both differ
+# from this script (cv_harness.build_blocks, calibrate=True), which is why the
+# two files disagree on spatial ROC (0.69 vs 0.41) and on BSS (raw vs
+# calibrated). Producing the extra schemes HERE means every cell comes from one
+# harness with one calibration setting, so the scheme table and the four-model
+# table cannot drift apart.
+TREE_SCHEMES = ("spatiotemporal", "temporal", "spatiotemporal_3blocks", "spatial")
 RANDOM_STATE = 42
 
 XGB_PARAMS = dict(n_estimators=400, learning_rate=0.03, max_depth=4,
@@ -93,10 +106,10 @@ def recompute_tree_models(df, feats):
 
     out, oof_all = [], {}
     if xgb is not None:
-        r, o = H.evaluate(df, feats, make_xgb, schemes=SCHEMES, sample_weight=w,
+        r, o = H.evaluate(df, feats, make_xgb, schemes=TREE_SCHEMES, sample_weight=w,
                           calibrate=True, impute=False, model_name="xgboost")
         out.append(r); oof_all["xgboost"] = o
-    r, o = H.evaluate(df, feats, make_rf, schemes=SCHEMES, sample_weight=w,
+    r, o = H.evaluate(df, feats, make_rf, schemes=TREE_SCHEMES, sample_weight=w,
                       calibrate=True, impute=True, model_name="random_forest")
     out.append(r); oof_all["random_forest"] = o
     return pd.concat(out, ignore_index=True), df, oof_all
@@ -114,8 +127,27 @@ def read_maxent_metrics():
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
-def make_figure(combined, path):
-    """Grouped bars: ROC / PR-lift / BSS, four models x two CV schemes."""
+def read_bootstrap():
+    """Block-bootstrap CIs, if bootstrap_uncertainty.py has already run.
+
+    ORDER NOTE: on a first pass this file does NOT exist -- compare_models.py
+    writes the OOF that bootstrap_uncertainty.py consumes, so the bootstrap can
+    only run afterwards. The figure therefore degrades to no error bars rather
+    than failing. Re-run compare_models.py after the bootstrap to get them.
+    """
+    f = OUTPUT_DIR / "bootstrap_marginal.csv"
+    if not f.exists():
+        log(f"[compare] {f.name} not found -- figure will have no error bars. "
+            f"Run bootstrap_uncertainty.py, then re-run this script.")
+        return None
+    b = pd.read_csv(f)
+    log(f"[compare] read {f.name} ({len(b)} model x scheme rows) for error bars")
+    return b
+
+
+def make_figure(combined, path, boot=None):
+    """Grouped bars: ROC / PR-lift / BSS, four models x two CV schemes,
+    with 95% block-bootstrap CIs where available."""
     metrics = ["roc_auc", "pr_lift", "bss"]
     models = S.models_in(combined["model"].unique())
     schemes = S.schemes_in(SCHEMES)
@@ -127,26 +159,47 @@ def make_figure(combined, path):
             vals = [combined[(combined.model == m) & (combined.scheme == scheme)][col].values
                     for m in models]
             vals = [float(v[0]) if len(v) else np.nan for v in vals]
+
+            err = None
+            if boot is not None and {f"{col}_lo", f"{col}_hi"} <= set(boot.columns):
+                lo, hi = [], []
+                for m in models:
+                    r = boot[(boot.model == m) & (boot.scheme == scheme)]
+                    lo.append(float(r[f"{col}_lo"].iloc[0]) if len(r) else np.nan)
+                    hi.append(float(r[f"{col}_hi"].iloc[0]) if len(r) else np.nan)
+                # asymmetric: percentile intervals are not symmetric about the
+                # point estimate, so lower and upper must be passed separately
+                err = np.abs(np.vstack([np.asarray(vals, float) - np.asarray(lo, float),
+                                        np.asarray(hi, float) - np.asarray(vals, float)]))
+
             bars = ax.bar(x + (i - (len(schemes) - 1) / 2) * width, vals, width,
                           label=S.scheme_label(scheme),
                           color=S.SCHEME_COLOURS.get(scheme),
                           hatch=S.SCHEME_HATCH.get(scheme, ""),
-                          edgecolor=S.BAR_EDGE, linewidth=S.BAR_EDGE_LW)
-            S.annotate_bars(ax, bars, vals, col)
+                          edgecolor=S.BAR_EDGE, linewidth=S.BAR_EDGE_LW,
+                          yerr=err, capsize=2.5,
+                          error_kw=dict(lw=0.9, ecolor="0.2", zorder=5))
+            # value labels are dropped once error bars are present: the two
+            # collide, and the interval is the more informative annotation
+            if err is None:
+                S.annotate_bars(ax, bars, vals, col)
         S.add_reference_line(ax, col)
         ax.set_xticks(x)
         ax.set_xticklabels([S.model_label(m, wrapped=True) for m in models], fontsize=9)
-        ax.set_title(S.metric_label(col), fontsize=11)
         ax.set_ylabel(S.metric_label(col))
         S.apply_ylim(ax, col)
+        if boot is not None and col == "roc_auc":
+            ax.set_ylim(0.15, 1.05)      # room for the wide spatial intervals
         ax.grid(axis="y", alpha=0.3)
     # figure-level legend: an in-axes legend collides with the bars in every
     # panel once value labels are on
     h, l = axes[0].get_legend_handles_labels()
     fig.legend(h, l, title="CV scheme", fontsize=9, ncol=len(l),
                loc="lower center", frameon=False, bbox_to_anchor=(0.5, -0.01))
+    sub = ("bars = 95% block-bootstrap CI" if boot is not None
+           else "no bootstrap CIs available \u2014 run bootstrap_uncertainty.py")
     fig.suptitle("Cx. nigripalpus weekly suitability — four-model comparison "
-                 "(pooled out-of-fold, calibrated)", fontsize=13)
+                 f"(pooled out-of-fold, calibrated; {sub})", fontsize=13)
     fig.tight_layout(rect=[0, 0.06, 1, 0.96])
     S.save(fig, path)
 
@@ -170,6 +223,24 @@ def run():
     pd.concat(rows, ignore_index=True).to_csv(OUTPUT_DIR / "oof_long_trees.csv", index=False)
     log(f"[compare] wrote oof_long_trees.csv ({sum(len(r) for r in rows):,} rows)")
     
+    # scheme table: trees only, every scheme. This is the source for the
+    # bottom row of the R2 synthesis figure and for Table R2.2. It replaces
+    # cv_metrics.csv, which is blocked and calibrated differently.
+    tree_cols = [c for c in ["model", "scheme", "n", "prevalence", "pr_auc",
+                             "pr_baseline", "pr_lift", "roc_auc", "brier", "bss"]
+                 if c in tree.columns]
+    scheme_tbl = tree[tree_cols].copy()
+    scheme_tbl["model"] = pd.Categorical(scheme_tbl["model"],
+                                         S.models_in(scheme_tbl["model"]), ordered=True)
+    scheme_tbl["scheme"] = pd.Categorical(scheme_tbl["scheme"],
+                                          S.schemes_in(scheme_tbl["scheme"]), ordered=True)
+    scheme_tbl = scheme_tbl.sort_values(["model", "scheme"])
+    scheme_tbl.to_csv(OUTPUT_DIR / "tree_scheme_metrics.csv", index=False)
+    log(f"[compare] wrote tree_scheme_metrics.csv "
+        f"({len(scheme_tbl)} rows, {len(TREE_SCHEMES)} schemes)\n")
+    log(scheme_tbl.to_string(index=False))
+    log("")
+
     maxent = read_maxent_metrics()
     combined = pd.concat([tree, maxent], ignore_index=True)
     combined = combined[combined["scheme"].isin(SCHEMES)]
@@ -184,7 +255,7 @@ def run():
     log(f"[compare] wrote combined_metrics.csv\n")
     log(tidy.to_string(index=False))
 
-    make_figure(combined, OUTPUT_DIR / "model_comparison.png")
+    make_figure(combined, OUTPUT_DIR / "model_comparison.png", boot=read_bootstrap())
     log(f"\n[done] comparison in {OUTPUT_DIR}")
     return tidy
 
