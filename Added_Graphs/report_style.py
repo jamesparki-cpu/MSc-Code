@@ -107,6 +107,11 @@ SCHEME_ORDER = ["spatiotemporal", "temporal", "spatiotemporal_3blocks",
 BLOCK_ORDER = ["land_cover", "seasonality", "terrain", "precipitation",
                "temperature", "vegetation", "moisture", "other"]
 
+# Reference forecasts. "persistence" is the reported variant; persistence_raw
+# and persistence_prioryear exist in the baseline CSVs and belong in an
+# appendix, so they are deliberately absent from this order.
+BASELINE_ORDER = ["climatology", "persistence", "prevalence"]
+
 
 # ===========================================================================
 # DISPLAY NAMES
@@ -126,6 +131,14 @@ SCHEME_PRETTY = {
     "spatiotemporal_3blocks":  "Spatiotemporal CV (3 blocks)",
     "spatial":                 "Spatial CV",
     "forward_chaining":        "Forward-chaining",
+}
+
+BASELINE_PRETTY = {
+    "climatology": "Climatology",
+    "persistence": "Persistence",
+    "prevalence": "Prevalence (constant)",
+    "persistence_raw": "Persistence (raw)",
+    "persistence_prioryear": "Persistence (prior year)",
 }
 
 BLOCK_PRETTY = {
@@ -203,6 +216,16 @@ BLOCK_COLOURS = {
     "vegetation":    "#b2df8a",
     "moisture":      "#99d8c9",
     "other":         "#f0f0f0",
+}
+
+# Reference forecasts: greys, so they read as the bar to beat rather than as
+# another model. Disjoint from every palette above.
+BASELINE_COLOURS = {
+    "climatology":           "#4f4f4f",
+    "persistence":           "#8c8c8c",
+    "prevalence":            "#c4c4c4",
+    "persistence_raw":       "#a6a6a6",
+    "persistence_prioryear": "#dcdcdc",
 }
 
 GREY = "#808080"          # reference lines, perfect-calibration diagonal
@@ -304,6 +327,16 @@ def block_label(block: str) -> str:
     return BLOCK_PRETTY.get(block, block.replace("_", " "))
 
 
+def baseline_label(baseline: str) -> str:
+    return BASELINE_PRETTY.get(baseline, baseline.replace("_", " "))
+
+
+def baselines_in(values) -> list:
+    present = set(map(str, values))
+    ordered = [b for b in BASELINE_ORDER if b in present]
+    return ordered + sorted(present - set(BASELINE_ORDER))
+
+
 def metric_label(metric: str) -> str:
     return METRIC_LABELS.get(metric, metric.replace("_", " "))
 
@@ -375,7 +408,8 @@ def _self_check():
     ok = True
     pools = {"MODEL_COLOURS": MODEL_COLOURS,
              "SCHEME_COLOURS": SCHEME_COLOURS,
-             "BLOCK_COLOURS": BLOCK_COLOURS}
+             "BLOCK_COLOURS": BLOCK_COLOURS,
+             "BASELINE_COLOURS": BASELINE_COLOURS}
     seen = {}
     for name, pool in pools.items():
         for key, hexval in pool.items():
@@ -393,6 +427,9 @@ def _self_check():
     for b in BLOCK_ORDER:
         if b not in BLOCK_PRETTY or b not in BLOCK_COLOURS:
             print(f"MISSING label/colour for block {b}"); ok = False
+    for b in BASELINE_ORDER:
+        if b not in BASELINE_PRETTY or b not in BASELINE_COLOURS:
+            print(f"MISSING label/colour for baseline {b}"); ok = False
     print("report_style self-check:", "PASS" if ok else "FAIL", flush=True)
     return ok
 

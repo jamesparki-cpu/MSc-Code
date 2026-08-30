@@ -57,14 +57,32 @@ BASE_DIR = Path(cfg.get("baselines_dir", str(NOWCAST_RES / "Baselines")))
 
 # which persistence variant is THE persistence baseline in the text; the other
 # variants stay in the CSV and go to an appendix
-BASELINES = ["climatology", "persistence", "prevalence"]
-BASELINE_LABELS = {"climatology": "Climatology", "persistence": "Persistence",
-                   "prevalence": "Prevalence (constant)"}
-# greys, disjoint from every palette in report_style
-BASELINE_COLOURS = {"climatology": "#4f4f4f", "persistence": "#8c8c8c",
-                    "prevalence": "#c4c4c4"}
+# baseline ordering, labels and colours now live in report_style, since the
+# nowcast figures use them too
+BASELINES = list(S.BASELINE_ORDER)
+BASELINE_LABELS = S.BASELINE_PRETTY
+BASELINE_COLOURS = S.BASELINE_COLOURS
 # models whose evaluation set matches the baselines' 21,608 rows
 CLIM_COMPARABLE = ["xgboost", "random_forest", "maxent_targetgroup"]
+
+# Which CV schemes get a column. Temporal is omitted by default: its numbers sit
+# within 0.006 of spatiotemporal on every metric, so the column adds a third of
+# the figure's width and no information. Set to None to show every scheme found
+# in baseline_metrics_weekly.csv.
+SHOW_SCHEMES = ["spatiotemporal", "spatial"]
+
+# Which schemes appear as rows in the forest plot. Kept separate from
+# SHOW_SCHEMES because the forest has room for more rows than the baseline
+# figure has columns.
+#
+# spatiotemporal_3blocks is EXCLUDED, and not only for space:
+# bootstrap_uncertainty.group_key() resamples it on spatial_block x iso_year --
+# the SIX-block unit -- rather than on coarse_block x iso_year. Its rows in
+# bootstrap_marginal.csv therefore report 32 groups, identical to ordinary
+# spatiotemporal CV, when three coarse blocks over six years can yield at most
+# 18. The intervals are computed on the wrong resampling unit and should not be
+# plotted until group_key is corrected.
+FOREST_SCHEMES = ["spatiotemporal", "temporal", "spatial"]
 
 def log(m): print(m, flush=True)
 
@@ -114,6 +132,12 @@ def fig_baselines():
         return
 
     schemes = [s for s in S.schemes_in(base.scheme.unique()) if s in set(mod.scheme)]
+    if SHOW_SCHEMES is not None:
+        dropped = [s for s in schemes if s not in SHOW_SCHEMES]
+        schemes = [s for s in schemes if s in SHOW_SCHEMES]
+        if dropped:
+            log(f"[fig1] omitting scheme column(s) {dropped} (SHOW_SCHEMES); "
+                f"their values remain in r3_bss_vs_climatology.csv")
     models = S.models_in(mod.model.unique())
     log(f"[fig1] schemes {schemes} | models {models}")
 
@@ -121,7 +145,7 @@ def fig_baselines():
     clim = (base[base.baseline == "climatology"]
             .set_index("scheme")[["brier", "n_scored"]])
     rows = []
-    for sch in schemes:
+    for sch in [x for x in S.schemes_in(base.scheme.unique()) if x in set(mod.scheme)]:
         if sch not in clim.index:
             continue
         bc, nc = float(clim.loc[sch, "brier"]), int(clim.loc[sch, "n_scored"])
@@ -142,7 +166,7 @@ def fig_baselines():
     log(derived.to_string(index=False))
 
     # ---------------------------------------------------------------- plot
-    fig, axes = plt.subplots(3, len(schemes), figsize=(4.6 * len(schemes), 11),
+    fig, axes = plt.subplots(3, len(schemes), figsize=(5.2 * len(schemes), 11),
                              squeeze=False)
     bss_panels = []      # (axis, entries, values) for the shared-limit pass
 
@@ -253,19 +277,23 @@ def fig_baselines():
             for k, ((key, kind), v) in enumerate(zip(entries, vals)):
                 if not np.isfinite(v):
                     continue
+                # white backing box: the label sits ON TOP of the clipped bar,
+                # which is dark and often hatched, so plain text is unreadable
+                box = dict(fc="white", ec="#b03030", lw=0.5, pad=1.6, alpha=0.95)
                 if v > yhi:
                     ax.annotate(f"\u2191 {S.fmt(v, 'bss')}", (k, yhi),
-                                xytext=(0, -10), textcoords="offset points",
+                                xytext=(0, -11), textcoords="offset points",
                                 ha="center", va="top", fontsize=7,
-                                color="#b03030", zorder=6)
+                                color="#b03030", zorder=6, bbox=box)
                 elif v < ylo:
                     ax.annotate(f"\u2193 {S.fmt(v, 'bss')}", (k, ylo),
-                                xytext=(0, 10), textcoords="offset points",
+                                xytext=(0, 11), textcoords="offset points",
                                 ha="center", va="bottom", fontsize=7,
-                                color="#b03030", zorder=6)
+                                color="#b03030", zorder=6, bbox=box)
     lo2 = min(a.get_ylim()[0] for a in axes[2]); hi2 = max(a.get_ylim()[1] for a in axes[2])
+    pad2 = 0.10 * (hi2 - lo2 or 1)      # headroom: value labels sit outside the bar
     for a in axes[2]:
-        a.set_ylim(lo2, hi2)
+        a.set_ylim(lo2 - pad2, hi2 + pad2)
 
     fig.suptitle("Models against reference forecasts. HATCHED bars are scored on a "
                  "different row set from the reference \u2014 persistence (17,166 rows) "
@@ -283,6 +311,14 @@ def fig_forest():
         log("[fig2] SKIP: bootstrap_marginal.csv not found -- run bootstrap_uncertainty.py")
         return
     b = pd.read_csv(fm)
+    if FOREST_SCHEMES is not None:
+        dropped = sorted(set(b.scheme) - set(FOREST_SCHEMES))
+        b = b[b.scheme.isin(FOREST_SCHEMES)]
+        if dropped:
+            log(f"[fig2] omitting scheme row(s) {dropped} (FOREST_SCHEMES)")
+    if b.empty:
+        log("[fig2] SKIP: no rows left after the scheme filter")
+        return
     metrics = [m for m in ("roc_auc", "pr_lift", "bss") if m in b.columns]
 
     # order: scheme block, models canonical within it
@@ -292,7 +328,8 @@ def fig_forest():
     rows = list(b.index)[::-1]           # top of plot = first row
     ypos = {i: k for k, i in enumerate(rows)}
 
-    fig, axes = plt.subplots(1, len(metrics), figsize=(4.8 * len(metrics), 8),
+    fig, axes = plt.subplots(1, len(metrics), figsize=(4.8 * len(metrics),
+                                                      2.2 + 0.52 * len(b)),
                              squeeze=False, sharey=True)
     for ax, met in zip(axes[0], metrics):
         for i, r in b.iterrows():
