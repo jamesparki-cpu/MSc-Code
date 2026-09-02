@@ -19,6 +19,16 @@ WHAT IT DOES
      spatial-transfer baseline. Climatology is the meaningful spatial reference,
      and note it degrades to a SEASONAL-ONLY reference there (tier 2), because a
      held-out cell has no training history.
+     Both scopes also persist ROW-LEVEL predictions:
+       baseline_oof_nowcast_long.csv  (written as baseline_oof_long.csv)
+       baseline_oof_weekly_long.csv
+     Baseline METRICS alone cannot be bootstrapped -- an interval needs the score
+     recomputed on resampled rows, which needs the predictions. A baseline
+     forecast is deterministic, but its SCORE is not: it was computed on the
+     cells that happened to be surveyed, and the interval quantifies sensitivity
+     to that. bootstrap_baselines.py and bootstrap_weekly_baselines.py consume
+     these files.
+
   3. DERIVED model skill without re-running anything:
        derived_bss_vs_climatology.csv
      Climatology has 100% test-row coverage (tier fallback guarantees a value),
@@ -96,6 +106,26 @@ def nowcast_baselines(df):
     per.to_csv(OUT_DIR / "baseline_metrics_nowcast.csv", index=False)
     pd.DataFrame(diag_rows).to_csv(OUT_DIR / "baseline_diagnostics_nowcast.csv", index=False)
     log(f"[nowcast] wrote baseline_metrics_nowcast.csv ({len(per)} rows)")
+    
+    # Row-level predictions for the nowcast scope. Same rationale as the weekly
+    # block below: the metrics alone cannot be resampled. iso_week is carried so
+    # that (Grid_ID, iso_week) forms a row key against nowcast_oof_long.csv --
+    # Grid_ID alone is not one, since a cell contributes many weeks, and merging
+    # on it would produce a cartesian product in the paired comparison.
+    long = []
+    for k, vec in oof.items():
+        m = np.isfinite(vec)
+        long.append(pd.DataFrame({
+            "Grid_ID":   df[B.CELL].to_numpy()[m],
+            "iso_week":  df[B.WEEK].to_numpy()[m],
+            "presence":  y[m],
+            "baseline":  k,
+            "p":         vec[m],
+            "test_year": df[B.YEAR].to_numpy()[m]}))
+    nl = pd.concat(long, ignore_index=True)
+    nl.to_csv(OUT_DIR / "baseline_oof_long.csv", index=False)
+    log(f"[nowcast] wrote baseline_oof_long.csv ({len(nl):,} rows) "
+        f"-- input to bootstrap_baselines.py")
     return per, oof
 
 
@@ -111,7 +141,7 @@ def weekly_baselines(df):
 
     blocked = H.build_blocks(df)
     y = df[B.TARGET].astype(int).to_numpy()
-    rows, diag_rows = [], []
+    rows, diag_rows, long_rows = [], [], []
 
     for scheme in WEEKLY_SCHEMES:
         groups = H.group_labels(blocked, scheme)
@@ -137,6 +167,24 @@ def weekly_baselines(df):
             s = B.score_forecast(y, vec, refs, constant_forecast=(name == "prevalence"))
             s.update(baseline=name, scheme=scheme)
             rows.append(s)
+
+        # Persist row-level predictions so the reference forecasts can be
+        # bootstrapped under the SAME blocked scheme as the models. spatial_block
+        # and iso_year travel with each row because they are the resampling
+        # units: the interval must be built on the group that formed the fold,
+        # not on rows, which are dependent within a cell.
+        for name, vec in oof.items():
+            msk = np.isfinite(vec)
+            long_rows.append(pd.DataFrame({
+                "scheme":        scheme,
+                "Grid_ID":       df[B.CELL].to_numpy()[msk],
+                "iso_year":      df[B.YEAR].to_numpy()[msk],
+                "iso_week":      df[B.WEEK].to_numpy()[msk],
+                "spatial_block": blocked["spatial_block"].to_numpy()[msk],
+                "presence":      y[msk],
+                "baseline":      name,
+                "p":             vec[msk]}))
+
         t1 = np.mean([d["tier1_cell_week_pct"] for d in diag_rows if d["scope"] == scheme])
         log(f"[weekly] {scheme}: persistence {'included' if use_persist else 'OMITTED (invalid)'} "
             f"| mean climatology tier1 {t1:.1f}%"
@@ -146,6 +194,12 @@ def weekly_baselines(df):
     out.to_csv(OUT_DIR / "baseline_metrics_weekly.csv", index=False)
     pd.DataFrame(diag_rows).to_csv(OUT_DIR / "baseline_diagnostics_weekly.csv", index=False)
     log(f"[weekly] wrote baseline_metrics_weekly.csv ({len(out)} rows)")
+
+    if long_rows:
+        wl = pd.concat(long_rows, ignore_index=True)
+        wl.to_csv(OUT_DIR / "baseline_oof_weekly_long.csv", index=False)
+        log(f"[weekly] wrote baseline_oof_weekly_long.csv ({len(wl):,} rows) "
+            f"-- input to bootstrap_weekly_baselines.py")
     return out
 
 
@@ -193,6 +247,9 @@ def run():
     log(f"\n[done] baseline tables -> {OUT_DIR}")
     log("[note] interpret against the MATCHED subset when comparing to models; "
         "see BASELINES.md B4.")
+    log("[next] bootstrap_baselines.py (nowcast scope) and "
+        "bootstrap_weekly_baselines.py (blocked schemes) turn the persisted "
+        "predictions into 95% intervals for the figures.")
 
 
 if __name__ == "__main__":

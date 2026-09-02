@@ -14,11 +14,32 @@ THE PROBLEM THIS SOLVES
   Both figures below sidestep that, in different ways.
 
   FIG A  maxent_background_matched.png
-         The 2018 held-out point validation is the ONE place both variants are
-         scored on identical observations: the same trap points, the same n,
-         the same presence/absence counts, week by week. So a direct
-         head-to-head is valid here and nowhere else. Paired bars for ROC and
-         BSS, with n and the absence count on the axis.
+         The 2018 held-out validation POOLED ACROSS WEEKS: 355 points scored
+         by both variants on identical rows. This is the only pooled comparison
+         of the two that needs no caveat.
+
+         Cross-validation and nowcast metrics are deliberately NOT shown. There
+         the variants are scored on different sets (21,608 rows at prevalence
+         0.776 against 26,667 at 0.628; 2,454 against 3,702), so vanilla's
+         higher score is partly a lower baseline rather than a better model, and
+         putting those bars beside a matched comparison invites the reader to
+         average across the two.
+
+         Per-week numbers rest on 20-102 points each and are noisy, which is why
+         the headline is pooled. Panel (d) still shows the per-week differences,
+         because a result that holds in every week separately is stronger than
+         one that only survives pooling -- but it plots DIFFERENCES rather than
+         levels, since the difference is what the matched design licenses.
+
+         Four panels: (a) pooled metrics; (b) pooled ROC curves; (c) pooled
+         reliability, which is where a BSS collapse becomes visible; (d) the
+         per-week target-group minus vanilla difference.
+
+         Requires validation_2018_cache.py to have run. It prefers
+         validation_2018_points.csv, which covers EVERY 2018 cell-week (about
+         2,454 rows over 53 weeks). If only the map surfaces are present it
+         falls back to joining those, which restricts the comparison to the five
+         mapped weeks (355 points) -- still matched, but a seventh of the data.
 
   FIG B  maxent_background_shap.png
          SHAP composition does not depend on the evaluation set at all, so this
@@ -48,6 +69,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from sklearn.metrics import (roc_auc_score, average_precision_score,
+                             brier_score_loss, roc_curve)
+
 import report_style as S
 
 # ============================== CONFIG ======================================
@@ -57,11 +81,14 @@ DATA_DIR = Path(cfg.get("weekly_xg_dir", "."))
 NOWCAST_DIR = Path(cfg.get("nowcast_dir", str(DATA_DIR)))
 VALIDATION_DIR = Path(cfg.get("validation_dir", str(NOWCAST_DIR / "Validation_Results")))
 SHAP_DIR = Path(cfg.get("shap_dir", str(DATA_DIR / "SHAP_Results")))
+MAXENT_DIR = Path(cfg.get("maxent_dir", str(DATA_DIR)))
+NOWCAST_RES = Path(cfg.get("nowcast_results_dir", str(NOWCAST_DIR / "Nowcast_Results")))
 OUT_DIR = Path(cfg.get("comparison_dir", str(DATA_DIR.parent / "Comparison_Results")))
 
 TG, VAN = "maxent_targetgroup", "maxent_vanilla"
 SEASON = {6: "Winter", 20: "Spring", 30: "Summer", 32: "Summer", 43: "Autumn"}
-MIN_ABS_FOR_TRUST = 10       # weeks below this are shaded and hatched
+MIN_ABS_FOR_TRUST = 10       # weeks below this are hatched in panel (d)
+TEST_LABEL = "2018"
 
 def log(m): print(m, flush=True)
 
@@ -76,92 +103,203 @@ def _find(name, *dirs):
 
 
 # ------------------------------------------------------------------- FIGURE A
+def matched_points() -> pd.DataFrame:
+    """Row-level 2018 predictions for both variants on identical rows.
+
+    Preference order:
+      1. validation_2018_points.csv   every 2018 cell-week, all weeks
+      2. surface + observations       the five MAPPED weeks only
+
+    Option 1 is not a different analysis, just a larger sample of the same one:
+    the map surfaces exist for five weeks because surfaces are expensive, while
+    scoring the observed rows is nearly free.
+    """
+    pts = _find("validation_2018_points.csv", VALIDATION_DIR, NOWCAST_DIR, OUT_DIR)
+    if pts is not None:
+        g = pd.read_csv(pts)
+        cols = [f"prob_{m}" for m in (TG, VAN) if f"prob_{m}" in g.columns]
+        if len(cols) == 2:
+            g = g.dropna(subset=cols)
+            log(f"[figA] {pts.name}: {len(g):,} matched points over "
+                f"{g.iso_week.nunique()} weeks "
+                f"(prevalence {g.presence.mean():.3f})")
+            return g
+        log(f"[figA] {pts.name} lacks both variants ({cols}); falling back")
+
+    surf_p = _find("surface_validation_2018.parquet", VALIDATION_DIR, NOWCAST_DIR)
+    obs_p = _find("observations_2018.parquet", VALIDATION_DIR, NOWCAST_DIR)
+    if surf_p is None or obs_p is None:
+        log("[figA] SKIP: run validation_2018_cache.py to write "
+            "surface_validation_2018.parquet + observations_2018.parquet")
+        return pd.DataFrame()
+    surf, obs = pd.read_parquet(surf_p), pd.read_parquet(obs_p)
+    cols = [f"prob_{m}" for m in (TG, VAN) if f"prob_{m}" in surf.columns]
+    if len(cols) < 2:
+        log(f"[figA] SKIP: need both variants in the cache, found {cols}")
+        return pd.DataFrame()
+    g = (obs.merge(surf[["Grid_ID", "iso_week"] + cols],
+                   on=["Grid_ID", "iso_week"], how="inner")
+            .dropna(subset=cols))
+    log(f"[figA] FALLBACK to map surfaces: {len(g):,} matched points over "
+        f"{g.iso_week.nunique()} MAPPED weeks (prevalence "
+        f"{g.presence.mean():.3f}). Re-run validation_2018_cache.py with "
+        f"POINT_ALL_WEEKS=True for the full-year sample.")
+    return g
+
+
+def _metrics(y, p):
+    prev = y.mean()
+    return dict(roc_auc=roc_auc_score(y, p),
+                pr_lift=average_precision_score(y, p) - prev,
+                bss=1 - brier_score_loss(y, p) /
+                    brier_score_loss(y, np.full(len(y), prev)))
+
+
 def fig_matched():
-    f = _find("validation_metrics_maxent.csv", VALIDATION_DIR, OUT_DIR, DATA_DIR)
-    if f is None:
-        log("[figA] SKIP: validation_metrics_maxent.csv not found")
+    g = matched_points()
+    if g.empty or g.presence.nunique() < 2:
         return
-    d = pd.read_csv(f).drop_duplicates(["model", "week"], keep="last")
-    have = [m for m in (TG, VAN) if m in set(d.model)]
-    if len(have) < 2:
-        log(f"[figA] SKIP: need both variants, found {have}")
-        return
-    weeks = sorted(d.week.unique())
+    y = g.presence.to_numpy(int)
+    prev = float(y.mean())
+    P = {m: g[f"prob_{m}"].to_numpy() for m in (TG, VAN)}
+    pooled = {m: _metrics(y, P[m]) for m in (TG, VAN)}
 
-    # the whole point of this figure: verify the evaluation sets really match
-    ok = True
-    for w in weeks:
-        sub = d[d.week == w]
-        for col in ("n", "n_pres", "n_abs"):
-            if col in sub.columns and sub[col].nunique() > 1:
-                log(f"[figA] WARNING week {w}: {col} differs between variants "
-                    f"({sub[col].tolist()}) -- the points are NOT matched")
-                ok = False
-    log(f"[figA] evaluation sets {'match' if ok else 'DO NOT match'} across "
-        f"{len(weeks)} weeks")
+    fig, axes = plt.subplots(2, 2, figsize=(12.5, 10))
 
-    low = [w for w in weeks
-           if "n_abs" in d.columns
-           and int(d[d.week == w].n_abs.iloc[0]) < MIN_ABS_FOR_TRUST]
+    # ---- (a) pooled metrics
+    ax = axes[0, 0]
+    mets = ["roc_auc", "pr_lift", "bss"]
+    x = np.arange(len(mets)); w = 0.38
+    for i, m in enumerate((TG, VAN)):
+        vals = [pooled[m][k] for k in mets]
+        bars = ax.bar(x + (i - 0.5) * w, vals, w, label=S.model_label(m),
+                      color=S.MODEL_COLOURS.get(m), edgecolor=S.BAR_EDGE,
+                      linewidth=S.BAR_EDGE_LW)
+        S.annotate_bars(ax, bars, vals, "roc_auc", fontsize=8)
+    ax.axhline(0, color=S.GREY, lw=1.0)
+    ax.axhline(0.5, color=S.GREY, ls="--", lw=1.0)
+    ax.annotate("0.5 (chance, ROC only)", (2.45, 0.5), xytext=(0, 3),
+                textcoords="offset points", ha="right", fontsize=7, color=S.GREY)
+    ax.set_xticks(x)
+    ax.set_xticklabels(["ROC-AUC", "PR-AUC lift", "BSS vs prevalence"], fontsize=9)
+    ax.grid(axis="y", alpha=0.3); ax.legend(fontsize=8)
+    ax.set_title(f"(a) Pooled over {S.fmt(len(y), 'n')} identical points "
+                 f"(prevalence {S.fmt(prev, 'prevalence')})", fontsize=11)
 
-    x = np.arange(len(weeks)); width = 0.38
-    fig, axes = plt.subplots(2, 1, figsize=(9.5, 7.6), sharex=True)
-    for ax, col in zip(axes, ["roc_auc", "bss"]):
-        for w in low:
-            ax.axvspan(weeks.index(w) - 0.5, weeks.index(w) + 0.5,
-                       color="#b03030", alpha=0.07, zorder=0)
-        for i, m in enumerate(have):
-            vals = [float(d[(d.model == m) & (d.week == w)][col].iloc[0])
-                    if len(d[(d.model == m) & (d.week == w)]) else np.nan
-                    for w in weeks]
-            bars = ax.bar(x + (i - 0.5) * width, vals, width,
-                          label=S.model_label(m), color=S.MODEL_COLOURS.get(m),
-                          edgecolor=S.BAR_EDGE, linewidth=S.BAR_EDGE_LW)
-            for b, w in zip(bars, weeks):
-                if w in low:
-                    b.set_hatch("//")
-            S.annotate_bars(ax, bars, vals, col, fontsize=7)
-        S.add_reference_line(ax, col)
-        ax.set_ylabel(S.metric_label(col) if col == "roc_auc"
-                      else "BSS vs prevalence")
-        ax.grid(axis="y", alpha=0.3)
-    axes[0].set_ylim(0.4, 1.08)
-    axes[0].set_title("(a) Discrimination on identical points", fontsize=11, loc="left")
-    axes[1].set_title("(b) Calibration on identical points", fontsize=11, loc="left")
+    # ---- (b) ROC curves
+    ax = axes[0, 1]
+    for m in (TG, VAN):
+        fpr, tpr, _ = roc_curve(y, P[m])
+        ax.plot(fpr, tpr, lw=2, color=S.MODEL_COLOURS.get(m),
+                label=f"{S.model_label(m)}  {S.fmt(pooled[m]['roc_auc'], 'roc_auc')}")
+    ax.plot([0, 1], [0, 1], ls="--", lw=1.1, color=S.GREY, label="chance")
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+    ax.set_xlabel("false positive rate"); ax.set_ylabel("true positive rate")
+    ax.grid(alpha=0.3); ax.legend(fontsize=8, loc="lower right")
+    ax.set_title("(b) Pooled ROC \u2014 one baseline, one row set", fontsize=11)
 
-    labels = []
-    for w in weeks:
-        r = d[d.week == w].iloc[0]
-        lab = f"{SEASON.get(w, '')}\nwk {w}"
-        if "n" in d.columns:
-            lab += f"\nn={int(r.n)}"
-        if {"n_pres", "n_abs"} <= set(d.columns):
-            lab += f"\n{int(r.n_pres)} pres / {int(r.n_abs)} abs"
-        labels.append(lab)
-    axes[1].set_xticks(x); axes[1].set_xticklabels(labels, fontsize=8)
+    # ---- (c) reliability
+    ax = axes[1, 0]
+    ax.plot([0, 1], [0, 1], ls="--", lw=1.2, color=S.GREY,
+            label="perfect calibration")
+    for m in (TG, VAN):
+        d = pd.DataFrame({"y": y, "p": P[m]})
+        try:
+            d["bin"] = pd.qcut(d.p, 8, duplicates="drop")
+        except ValueError:
+            d["bin"] = pd.cut(d.p, 8)
+        b = (d.groupby("bin", observed=True)
+               .agg(mp=("p", "mean"), obs=("y", "mean"), n=("y", "size")))
+        b = b[b.n >= 15]
+        ax.plot(b.mp, b.obs, marker="o", ms=5, lw=1.8,
+                color=S.MODEL_COLOURS.get(m), label=S.model_label(m))
+    ax.axhline(prev, color=S.GREY, ls=":", lw=1.0)
+    ax.annotate(f"observed base rate {S.fmt(prev, 'prevalence')}", (0.02, prev),
+                xytext=(0, 4), textcoords="offset points", fontsize=7,
+                color=S.GREY)
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+    ax.set_xlabel("mean predicted suitability")
+    ax.set_ylabel("observed presence frequency")
+    ax.grid(alpha=0.3); ax.legend(fontsize=8, loc="upper left")
+    ax.set_title("(c) Pooled reliability \u2014 below the diagonal is "
+                 "over-prediction", fontsize=11)
 
-    h, l = axes[0].get_legend_handles_labels()
-    fig.legend(h, l, fontsize=9, ncol=2, loc="lower center", frameon=False,
-               bbox_to_anchor=(0.5, -0.005))
-    fig.suptitle("Effort-based absences vs random background, scored on the SAME "
-                 f"points ({max(weeks) and 2018} held-out validation)\n"
-                 f"shaded/hatched = fewer than {MIN_ABS_FOR_TRUST} observed "
-                 "absences: low power, do not over-read", fontsize=11.5)
-    fig.tight_layout(rect=[0, 0.05, 1, 0.92])
+    # ---- (d) per-week difference
+    ax = axes[1, 1]
+    weeks, rows = sorted(g.iso_week.unique()), []
+    for wk in weeks:
+        sub = g[g.iso_week == wk]
+        yy = sub.presence.to_numpy(int)
+        if len(np.unique(yy)) < 2:
+            continue
+        a = _metrics(yy, sub[f"prob_{TG}"].to_numpy())
+        b = _metrics(yy, sub[f"prob_{VAN}"].to_numpy())
+        rows.append(dict(iso_week=int(wk), n=len(yy),
+                         n_abs=int((yy == 0).sum()),
+                         d_roc=a["roc_auc"] - b["roc_auc"],
+                         d_bss=a["bss"] - b["bss"]))
+    wk = pd.DataFrame(rows)
+    xw = np.arange(len(wk)); w = 0.38
+    # Colour by WHICH VARIANT THE DIFFERENCE FAVOURS, using the model palette:
+    # above zero the bar is target-group's colour, below it is vanilla's. Grey
+    # bars would have been neutral but would also have thrown away the one thing
+    # the panel is for -- direction -- and disconnected it from panels (a)-(c).
+    # The two metrics are separated by alpha, not by hue, so hue stays free to
+    # carry the sign.
+    for i, (col, lab, alpha) in enumerate([("d_roc", "\u0394 ROC-AUC", 1.0),
+                                           ("d_bss", "\u0394 BSS", 0.55)]):
+        cols = [S.MODEL_COLOURS[TG] if v >= 0 else S.MODEL_COLOURS[VAN]
+                for v in wk[col]]
+        bars = ax.bar(xw + (i - 0.5) * w, wk[col], w, label=lab, color=cols,
+                      alpha=alpha, edgecolor=S.BAR_EDGE, linewidth=S.BAR_EDGE_LW)
+        for b_, low in zip(bars, wk.n_abs < MIN_ABS_FOR_TRUST):
+            if low:
+                b_.set_hatch("//")
+    ax.axhline(0, color=S.GREY, lw=1.2)
+
+    # the legend must explain hue AND alpha, so it is built by hand
+    from matplotlib.patches import Patch
+    ax.legend(handles=[
+        Patch(fc=S.MODEL_COLOURS[TG], ec=S.BAR_EDGE, label="\u0394 ROC-AUC"),
+        Patch(fc=S.MODEL_COLOURS[TG], ec=S.BAR_EDGE, alpha=0.55, label="\u0394 BSS"),
+        Patch(fc=S.MODEL_COLOURS[TG], ec=S.BAR_EDGE,
+              label="above 0: target-group ahead"),
+        Patch(fc=S.MODEL_COLOURS[VAN], ec=S.BAR_EDGE,
+              label="below 0: vanilla ahead"),
+    ], fontsize=7, ncol=2, loc="upper right", framealpha=0.9)
+    ax.set_xticks(xw)
+    if len(wk) <= 8:
+        ax.set_xticklabels([f"{SEASON.get(r.iso_week, '')}\nwk {r.iso_week}\n"
+                            f"n={r.n} ({r.n_abs} abs)" for r in wk.itertuples()],
+                           fontsize=7.5)
+    else:
+        # a full year of weeks: labels every fourth, and n moves to the caption
+        ax.set_xticklabels([str(r.iso_week) if k % 4 == 0 else ""
+                            for k, r in enumerate(wk.itertuples())], fontsize=7)
+        ax.set_xlabel("ISO week")
+    ax.set_ylabel("difference: target-group \u2212 vanilla")
+    ax.grid(axis="y", alpha=0.3)
+    up = int((wk.d_roc > 0).sum())
+    thin = int((wk.n_abs < MIN_ABS_FOR_TRUST).sum())
+    ax.set_title(f"(d) Per-week difference \u2014 target-group ahead on ROC in "
+                 f"{up}/{len(wk)} weeks\nhatched = fewer than "
+                 f"{MIN_ABS_FOR_TRUST} observed absences ({thin} weeks)",
+                 fontsize=11)
+
+    fig.suptitle("Effort-based absences vs random background, on identical "
+                 "observations\n"
+                 f"{TEST_LABEL} held-out validation; cross-validation metrics are "
+                 "excluded because there the two variants are scored on "
+                 "different rows at different prevalence", fontsize=11.5)
+    fig.tight_layout(rect=[0, 0, 1, 0.92])
     S.save(fig, OUT_DIR / "maxent_background_matched.png")
 
-    # tidy table for the text
-    t = (d[d.model.isin(have)]
-         .pivot(index="week", columns="model", values=["roc_auc", "bss"]))
-    t.columns = [f"{a}_{b.replace('maxent_', '')}" for a, b in t.columns]
-    for met in ("roc_auc", "bss"):
-        a, b = f"{met}_targetgroup", f"{met}_vanilla"
-        if a in t.columns and b in t.columns:
-            t[f"{met}_diff"] = (t[a] - t[b]).round(3)
-    t.round(3).to_csv(OUT_DIR / "maxent_background_matched.csv")
-    wins = int((t.get("roc_auc_diff", pd.Series(dtype=float)) > 0).sum())
-    log(f"[figA] target-group ahead on ROC in {wins}/{len(t)} weeks")
-    log(t.round(3).to_string())
+    out = pd.DataFrame([dict(scope="pooled", iso_week="all", n=len(y),
+                             prevalence=round(prev, 3), model=m, **pooled[m])
+                        for m in (TG, VAN)])
+    out = pd.concat([out, wk.assign(scope="per_week")], ignore_index=True)
+    out.round(4).to_csv(OUT_DIR / "maxent_background_matched.csv", index=False)
+    log(out.round(3).to_string(index=False))
 
 
 # ------------------------------------------------------------------- FIGURE B

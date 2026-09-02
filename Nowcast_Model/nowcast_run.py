@@ -131,7 +131,7 @@ def run():
         perfold.append(pf)
         summary.append(pooled); summary.append(headline)
 
-        r = df[["Grid_ID", "presence"]].copy()
+        r = df[["Grid_ID", "iso_week", "presence"]].copy()
         r["model"], r["p"], r["test_year"] = variant, oof, test_of
         oof_rows.append(r.dropna(subset=["p"]))
         
