@@ -213,7 +213,12 @@ def run():
     log("[compare] recomputing XGB + RF (fast) through the shared harness...")
     tree, blocked, oof_all = recompute_tree_models(df, feats)
     # persist calibrated OOF in long form for the bootstrap
-    keys = blocked[[H.GRID_ID_COL, "iso_year", "spatial_block", "presence"]].reset_index(drop=True)
+    # iso_week is carried because (Grid_ID, iso_year, iso_week) is the row key
+    # the paired bootstrap merges on. Grid_ID alone is not one -- a cell
+    # contributes ~18 weeks per year -- and pairing without the week silently
+    # collapses 21,608 rows to ~1,479 via pivot_table's aggfunc="first".
+    keys = blocked[[H.GRID_ID_COL, "iso_year", "iso_week",
+                    "spatial_block", "presence"]].reset_index(drop=True)
     rows = []
     for model, schemes in oof_all.items():
         for scheme, p in schemes.items():

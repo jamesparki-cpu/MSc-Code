@@ -302,7 +302,7 @@ def run(config_path="config.json", schemes=None, n_boot=N_BOOT):
         # ---- paired model vs baseline, on the matched row set ----
         if not len(m):
             continue
-        kcols = ["Grid_ID", "iso_year"]
+        kcols = ["Grid_ID", "iso_year", "iso_week"]
         mw = m.pivot_table(index=kcols + ["presence", "spatial_block"],
                            columns="model", values="p", aggfunc="first").reset_index()
         bw = b.pivot_table(index=kcols + ["presence"],

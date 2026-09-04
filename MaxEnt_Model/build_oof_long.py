@@ -23,7 +23,14 @@ SPATIAL_BLOCK RECONSTRUCTION
 
 OUTPUT
   <comparison_dir>/oof_long.csv
-    model, scheme, Grid_ID, iso_year, spatial_block, presence, p
+    model, scheme, Grid_ID, iso_year, iso_week, spatial_block, presence, p
+
+WHY iso_week IS CARRIED
+  (Grid_ID, iso_year, iso_week) is the row key the paired bootstrap merges on.
+  Grid_ID alone is not one -- a cell contributes ~18 weeks per year -- so a
+  merge without the week collapses the frame via pivot_table's aggfunc="first",
+  silently reducing 21,608 rows to ~1,479 and producing paired differences
+  computed on one week per cell-year.
 """
 import json
 import re
@@ -77,7 +84,9 @@ def load_maxent(path: Path, variant: str) -> pd.DataFrame:
     out = []
     for c in oof_cols:
         scheme = c.replace("oof_", "")
-        r = df[[GRID_ID_COL, "iso_year", "spatial_block", "presence"]].copy()
+        # model / scheme / p are assigned below, not read from the file
+        r = df[[GRID_ID_COL, "iso_year", "iso_week",
+                "spatial_block", "presence"]].copy()
         r["model"] = f"maxent_{variant}"
         r["scheme"] = scheme
         r["p"] = df[c].to_numpy()
@@ -116,7 +125,20 @@ def run():
     if not frames:
         raise SystemExit("no OOF inputs found; nothing to assemble")
 
-    cols = ["model", "scheme", GRID_ID_COL, "iso_year", "spatial_block", "presence", "p"]
+    # iso_week is the row key the paired bootstrap merges on: Grid_ID alone is
+    # not one, since a cell contributes ~18 weeks per year, and pairing without
+    # the week silently collapses the frame via pivot_table's aggfunc="first".
+    cols = ["model", "scheme", GRID_ID_COL, "iso_year", "iso_week",
+            "spatial_block", "presence", "p"]
+    for f in frames:
+        missing = [c for c in cols if c not in f.columns]
+        if missing:
+            raise SystemExit(
+                f"input frame missing {missing}. iso_week comes from "
+                f"compare_models.py (the `keys = blocked[[...]]` selection in "
+                f"run()) for the trees, and from the MaxEnt OOF CSVs for the "
+                f"MaxEnt variants. Patch whichever is missing it and re-run "
+                f"that script before this one.")
     long = pd.concat([f[cols] for f in frames], ignore_index=True)
 
     n0 = len(long)
@@ -133,6 +155,16 @@ def run():
                    .round(3).reset_index())
     log("\n[check] rows and prevalence per model x scheme:")
     log(summary.to_string(index=False))
+    # a paired merge on (Grid_ID, iso_year, iso_week) needs unique keys within
+    # each model x scheme; duplicates would inflate the merge instead of
+    # collapsing it, so check here rather than discovering it in the bootstrap
+    dup = long.duplicated(["model", "scheme", GRID_ID_COL,
+                           "iso_year", "iso_week"]).sum()
+    if dup:
+        log(f"[check] WARNING {dup:,} duplicate (model, scheme, cell, year, week) "
+            f"rows -- the paired bootstrap merge will not be one-to-one")
+    else:
+        log("[check] row key (model, scheme, Grid_ID, iso_year, iso_week) is unique")
     log("\n[note] maxent_vanilla prevalence should differ from the others "
         "(random background, not target-group absences) -- it is scored on a "
         "different evaluation set and must not be paired against them.")
