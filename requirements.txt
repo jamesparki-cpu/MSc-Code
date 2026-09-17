@@ -1,115 +1,38 @@
-affine==2.4.0
-anywidget==0.10.0
-asttokens==3.0.1
-attrs==26.1.0
-beautifulsoup4==4.15.0
-bqplot==0.12.45
-branca==0.8.2
-bs4==0.0.2
-Cartopy==0.25.0
-certifi==2026.4.22
-cffi==2.0.0
-charset-normalizer==3.4.7
-click==8.3.3
-click-plugins==1.1.1.2
-cligj==0.7.2
-cloudpickle==3.1.2
-comm==0.2.3
-contourpy==1.3.2
-cryptography==46.0.7
-cycler==0.12.1
-decorator==5.2.1
-earthengine-api==1.7.22
-eerepr==0.1.2
-elapid==1.0.3
-exceptiongroup==1.3.1
-executing==2.2.1
-folium==0.20.0
-fonttools==4.62.1
-future==1.0.0
-geemap==0.37.2
-geocoder==1.38.1
-geopandas==1.1.4
-google-api-core==2.30.3
-google-api-python-client==2.194.0
-google-auth==2.49.2
-google-auth-httplib2==0.3.1
-google-cloud-core==2.5.1
-google-cloud-storage==3.10.1
-google-crc32c==1.8.0
-google-resumable-media==2.8.2
-googleapis-common-protos==1.74.0
-httplib2==0.31.2
-idna==3.13
-ImageIO==2.37.3
-imageio-ffmpeg==0.6.0
-ipyevents==2.0.4
-ipyfilechooser==0.6.0
-ipyleaflet==0.20.0
-ipython==8.39.0
-ipywidgets==8.1.8
-jedi==0.19.2
-Jinja2==3.1.6
-joblib==1.5.3
-jupyter-leaflet==0.20.0
-jupyterlab_widgets==3.0.16
-kiwisolver==1.5.0
-llvmlite==0.47.0
-MarkupSafe==3.0.3
-matplotlib==3.10.8
-matplotlib-inline==0.2.1
-narwhals==2.20.0
-numba==0.65.1
-numpy==2.2.6
-packaging==26.1
-pandas==2.3.3
-parso==0.8.6
-pexpect==4.9.0
-pillow==12.2.0
-plotly==6.7.0
-prompt_toolkit==3.0.52
-proto-plus==1.27.2
-protobuf==7.34.1
-psutil==7.2.2
-psygnal==0.15.1
-ptyprocess==0.7.0
-pure_eval==0.2.3
-pyarrow==24.0.0
-pyasn1==0.6.3
-pyasn1_modules==0.4.2
-pycparser==3.0
-Pygments==2.20.0
-pyogrio==0.13.0
-pyparsing==3.3.2
-pyperclip==1.11.0
-pyproj==3.7.1
-pyshp==3.0.3
-python-box==7.4.1
-python-dateutil==2.9.0.post0
-pytz==2026.1.post1
-rasterio==1.4.4
-ratelim==0.1.6
-requests==2.33.1
-rtree==1.4.1
-scikit-learn==1.5.2
-scipy==1.15.3
-scooby==0.11.1
-shap==0.49.1
-shapely==2.1.2
-six==1.17.0
-slicer==0.0.8
-soupsieve==2.8.4
-stack-data==0.6.3
-threadpoolctl==3.6.0
-tqdm==4.68.2
-traitlets==5.14.3
-traittypes==0.2.3
-typing_extensions==4.15.0
-tzdata==2026.1
-uritemplate==4.2.0
-urllib3==2.6.3
-wcwidth==0.6.0
-widgetsnbextension==4.0.15
-xarray==2025.6.1
-xgboost==3.2.0
-xyzservices==2026.3.0
+# requirements.txt
+# COMP702 MSc dissertation — weekly ML habitat-suitability models for Culex nigripalpus, Florida
+# Derived from an AST audit of all 46 project scripts.
+#
+# NOTE ON VERSIONS: the version floors below are the minimum releases that support the
+# APIs actually used in this codebase. 
+
+# --- Core data handling ---
+pandas>=2.0.0
+numpy>=1.24.0
+pyarrow>=12.0.0          # Parquet engine; required by the 37 scripts using read_parquet/to_parquet
+
+# --- Modelling ---
+scikit-learn>=1.3.0      # RandomForestClassifier, IsotonicRegression, GroupKFold,
+                         # LeaveOneGroupOut, GroupShuffleSplit, KMeans, metrics
+xgboost>=2.0.0           # XGBClassifier, XGBModel, DMatrix, tree_method="hist"
+elapid>=1.0.0            # MaxentModel (linear/quadratic/hinge features, cloglog transform)
+
+# --- Statistics ---
+scipy>=1.10.0            # cKDTree, spearmanr, hierarchical linkage/dendrogram, squareform
+
+# --- Interpretability ---
+shap>=0.44.0             # TreeExplainer / KernelExplainer for per-model SHAP attribution
+
+# --- Figures and animations ---
+matplotlib>=3.7.0        # Agg backend, GridSpec, Normalize, Line2D
+imageio>=2.31.0          # imageio.v2 — animated GIF export for weekly suitability surfaces
+
+# --- Remote sensing / data acquisition (extraction stage only) ---
+earthengine-api>=0.1.380 # imported as `ee` — MODIS, Daymet, land-cover extraction
+geemap>=0.30.0           # Earth Engine export helpers in extract_data_loop.py
+
+# --- Standard library (no install required; listed for completeness only) ---
+# argparse, datetime, gc, glob, itertools, json, os, pathlib, re, typing, __future__
+
+# --- First-party project modules (no install required) ---
+# baselines, cv_harness, derived_maps, map_style, maxent_common, nowcast_cv,
+# report_style, shap_common2, shaps_common
